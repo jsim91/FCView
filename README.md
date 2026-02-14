@@ -4,14 +4,15 @@ Interactive Shiny application for exploring [FCSimple](https://github.com/jsim91
 
 ## Installation
 
-Install FCView directly from GitHub using devtools:
+Install FCView using BiocManager to ensure all dependencies (including Bioconductor packages) are properly installed:
 
 ```r
-# Install devtools if not already installed
-if (!require("devtools")) install.packages("devtools")
+# Install BiocManager if not already installed
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
 
-# Install FCView
-devtools::install_github("jsim91/FCView")
+# Install FCView with all dependencies
+BiocManager::install("jsim91/FCView")
 ```
 
 ## Usage

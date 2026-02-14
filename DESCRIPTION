@@ -44,6 +44,8 @@ Imports:
     sccomp,
     survival,
     survminer
+Remotes:
+    MangiolaLaboratory/sccomp
 RoxygenNote: 7.3.3
 URL: https://github.com/jsim91/FCView
 BugReports: https://github.com/jsim91/FCView/issues

@@ -1,4 +1,29 @@
-# shiny app for exploring [FCSimple](https://github.com/jsim91/FCSimple) results
+# FCView
+
+Interactive Shiny application for exploring [FCSimple](https://github.com/jsim91/FCSimple) flow cytometry analysis results.
+
+## Installation
+
+Install FCView directly from GitHub using devtools:
+
+```r
+# Install devtools if not already installed
+if (!require("devtools")) install.packages("devtools")
+
+# Install FCView
+devtools::install_github("jsim91/FCView")
+```
+
+## Usage
+
+Launch the FCView app:
+
+```r
+library(FCView)
+run_fcview()
+```
+
+## Data Requirements
 
 The input object, saved in .RData format, should contain the following elements, as formatted by FCSimple functions unless otherwise noted:
   - data `[required]`
@@ -57,5 +82,33 @@ Top-level structure
 | --- | --- | --- | --- |
 | `heatmap_tile_data` | numeric matrix | Heatmap data | FCSimple::fcs_cluster_heatmap |
 
-<b>NOTE:</b> </br>
-You may delete the `obj$cluster_heatmap$heatmap` and `obj$cluster_heatmap$rep_used` elements of `obj$cluster_heatmap` if present; `heatmap` and `rep_used` are not needed for fcview and it will cut down on file size if these are set to NULL. Reminder: `obj$cluster_heatmap` must remain type list after dropping `heatmap` and `rep_used` elements.
+## Preparing Data for FCView
+
+The easiest way to prepare your FCSimple analysis object for FCView is to use the `fcs_prepare_fcview_object()` function:
+
+```r
+# Prepare object with downsampling and save to file
+prepared_obj <- FCSimple::fcs_prepare_fcview_object(
+  my_analysis_object,
+  downsample_size = 100000,
+  clustering_algorithm = "leiden",
+  output_dir = "output/fcview",
+  file_name = "my_analysis_fcview"
+)
+```
+
+This function will:
+- Remove non-essential fields to reduce file size
+- Standardize clustering algorithm names to 'cluster' for compatibility
+- Optionally downsample cells while maintaining consistency across all fields
+- Save the prepared object as an .RData file ready for upload
+
+See `?FCSimple::fcs_prepare_fcview_object` for more details.
+
+## Features
+
+See [FEATURES.md](FEATURES.md) for a full list of app features.
+
+## License
+
+MIT License - see [LICENSE](LICENSE) file for details.

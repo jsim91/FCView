@@ -1,0 +1,49 @@
+Package: FCView
+Type: Package
+Title: Interactive Shiny Application for Flow Cytometry Data Visualization
+Version: 1.0.0
+Authors@R: person("Joshua", "D.", "Simmons", email = "joshua.d.simmons@vumc.org", role = c("aut", "cre"))
+Description: An interactive Shiny application for exploring and analyzing flow 
+    cytometry data processed with FCSimple. Provides visualization tools for 
+    dimensionality reduction plots, cluster heatmaps, abundance analysis, and 
+    statistical modeling.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+Roxygen: list(markdown = TRUE)
+Depends:
+    R (>= 4.0.0)
+Imports:
+    shiny,
+    shinyWidgets,
+    plotly,
+    ggplot2,
+    ggrastr,
+    dplyr,
+    tidyr,
+    stringr,
+    ComplexHeatmap,
+    circlize,
+    viridis,
+    scales,
+    glmnet,
+    Boruta,
+    colourpicker,
+    caret,
+    nnet,
+    pROC,
+    yardstick,
+    rsample,
+    boot,
+    rlang,
+    randomForest,
+    multiROC,
+    zip,
+    parallel,
+    patchwork,
+    sccomp,
+    survival,
+    survminer
+RoxygenNote: 7.3.3
+URL: https://github.com/jsim91/FCView
+BugReports: https://github.com/jsim91/FCView/issues

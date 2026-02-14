@@ -1,1 +1,0 @@
-shiny::runApp(appDir = 'D:/fcview_shiny/fcview')

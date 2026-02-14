@@ -28,9 +28,9 @@
 #'   - `data`: numeric matrix of cells × features
 #'   - `source`: character vector of sample identifiers
 #'   - `metadata`: data frame with sample-level metadata (must include `patient_ID`)
-#'   - `cluster`: list containing cluster assignments and optional abundance/counts
+#'   - `cluster`: list containing cluster assignments, abundance, and counts
 #'   - `umap` or `tsne`: list with `coordinates` data frame (optional)
-#'   - `cluster_heatmap`: list with heatmap tile data (optional)
+#'   - `cluster_heatmap`: list with heatmap tile data
 #'
 #'   Use `FCSimple::fcs_prepare_fcview_object()` to prepare your analysis object
 #'   for upload to the app.
@@ -56,11 +56,11 @@
 #' @export
 run_fcview <- function(launch.browser = TRUE, port = NULL, host = "127.0.0.1", ...) {
   app_dir <- system.file("app", package = "FCView")
-  
+
   if (app_dir == "") {
     stop("Could not find FCView app directory. Please reinstall the package.")
   }
-  
+
   shiny::runApp(
     appDir = app_dir,
     launch.browser = launch.browser,

@@ -94,7 +94,7 @@ prepared_obj <- FCSimple::fcs_prepare_fcview_object(
   downsample_size = 100000,
   clustering_algorithm = "leiden",
   output_dir = "output/fcview",
-  file_name = "my_analysis_fcview"
+  file_name = "my_analysis_fcview" # note: do not include a file extension; it is added internally
 )
 ```
 

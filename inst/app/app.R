@@ -830,13 +830,7 @@ ui <- navbarPage(
           selected = "viridis"
         ),
         br(),
-        downloadButton("export_heatmap_pdf", "Export heatmap as PDF"),
-        hr(),
-        h4("Cluster Collections"),
-        helpText("Create collections of clusters to restrict testing in Testing, Categorical, and Continuous tabs."),
-        uiOutput("cluster_collections_ui"),
-        br(),
-        actionButton("add_collection", "Add Collection", icon = icon("plus"))
+        downloadButton("export_heatmap_pdf", "Export heatmap as PDF")
       ),
       column(
         9, 
@@ -853,6 +847,26 @@ ui <- navbarPage(
           condition = "output.hasAnnotations",
           actionButton("apply_annotations", "Apply Annotations", icon = icon("check"), class = "btn-success")
         )
+      )
+    )
+  ),
+  tabPanel(
+    "Collections",
+    h3("Cluster & Cell Type Collections"),
+    helpText("Create collections of clusters or cell types to restrict testing in Testing, Categorical, and Continuous tabs."),
+    hr(),
+    fluidRow(
+      column(
+        12,
+        uiOutput("cluster_collections_ui"),
+        br(),
+        actionButton("add_collection", "Add Collection", icon = icon("plus")),
+        br(), br(),
+        conditionalPanel(
+          condition = "output.hasCollections",
+          actionButton("save_collections", "Update Collections", icon = icon("save"), class = "btn-success")
+        ),
+        br()
       )
     )
   ),
@@ -1445,6 +1459,18 @@ ui <- navbarPage(
 
 # ---- Server ----
 server <- function(input, output, session) {
+  # Add handler for clean shutdown
+  onStop(function() {
+    # Suppress errors during shutdown - this prevents RStudio debugger from triggering
+    # on innocuous cleanup errors in the later/shiny event loop
+    suppressWarnings({
+      suppressMessages({
+        # Clean up any pending observers
+        session$close()
+      })
+    })
+  })
+  
   # App-wide stores
   rv <- reactiveValues(
     obj = NULL,
@@ -1473,9 +1499,11 @@ server <- function(input, output, session) {
     subset_summary = NULL, # Summary of subsetting results
     subset_id = "000000000", # Unique ID for current subset - "000000000" means no subsetting applied
     # Cluster annotation engine
-    celltype_annotations = list(), # List of celltype -> cluster assignments
+    celltype_annotations = list(), # Saved annotations (source of truth for cluster_map)
+    celltype_annotations_working = list(), # Working state for UI edits (not saved until Apply button click)
     # Cluster collections
-    cluster_collections = list(), # List of collection_name -> cluster vector
+    cluster_collections = list(), # Saved collections (source of truth for rest of app)
+    cluster_collections_working = list(), # Working state for UI edits (not saved until button click)
     cluster_collections_cached = list() # Cached collections for use in other tabs
   )
   cat_plot_cache <- reactiveVal(NULL)
@@ -1972,6 +2000,9 @@ server <- function(input, output, session) {
 
         # Persist mini hide checkbox changes
         observeEvent(input[[mini_hide_id]], {
+          # Guard against shutdown
+          if (session$isEnded()) return()
+          
           val <- input[[mini_hide_id]]
           if (is.null(val)) return()
           rv$mini_hide_states[[mycol]] <- isTRUE(val)
@@ -1989,6 +2020,9 @@ server <- function(input, output, session) {
 
         # Persist mini type selector changes
         observeEvent(input[[mini_type_id]], {
+          # Guard against shutdown
+          if (session$isEnded()) return()
+          
           val <- input[[mini_type_id]]
           if (is.null(val)) return()
           rv$type_coercions[[mycol]] <- val
@@ -2297,6 +2331,9 @@ server <- function(input, output, session) {
       # Only re-render when column changes (not when values change)
       observeEvent(input[[col_input_id]],
         {
+          # Guard against shutdown
+          if (session$isEnded()) return()
+          
           selected_col <- input[[col_input_id]]
           if (is.null(selected_col) || !nzchar(selected_col)) {
             output[[values_ui_id]] <- renderUI(NULL)
@@ -2391,6 +2428,9 @@ server <- function(input, output, session) {
             # Add observers for mean/median buttons
             observeEvent(input[[mean_btn_id]],
               {
+                # Guard against shutdown
+                if (session$isEnded()) return()
+                
                 operator <- input[[operator_input_id]]
                 if (!is.null(operator) && operator %in% c("range_internal", "range_external")) {
                   # For range, center around mean
@@ -2405,6 +2445,9 @@ server <- function(input, output, session) {
 
             observeEvent(input[[median_btn_id]],
               {
+                # Guard against shutdown
+                if (session$isEnded()) return()
+                
                 operator <- input[[operator_input_id]]
                 if (!is.null(operator) && operator %in% c("range_internal", "range_external")) {
                   # For range, center around median
@@ -2477,6 +2520,9 @@ server <- function(input, output, session) {
     lapply(rule_ids, function(rule_id) {
       observeEvent(input[[paste0("remove_rule_", rule_id)]],
         {
+          # Guard against shutdown
+          if (session$isEnded()) return()
+          
           # Remove this specific rule ID from the list
           current_ids <- subset_rule_ids()
           subset_rule_ids(setdiff(current_ids, rule_id))
@@ -2843,15 +2889,32 @@ server <- function(input, output, session) {
     }
   })
   
-  # Check if annotations exist
+  # Check if annotations exist (in working state)
   output$hasAnnotations <- reactive({
-    length(rv$celltype_annotations) > 0
+    length(rv$celltype_annotations_working) > 0
   })
   outputOptions(output, "hasAnnotations", suspendWhenHidden = FALSE)
   
+  # Initialize annotation working state from saved state
+  observeEvent(rv$celltype_annotations, {
+    rv$celltype_annotations_working <- rv$celltype_annotations
+  }, ignoreNULL = FALSE)
+  
+  # Check if collections exist (in working state)
+  output$hasCollections <- reactive({
+    length(rv$cluster_collections_working) > 0
+  })
+  outputOptions(output, "hasCollections", suspendWhenHidden = FALSE)
+  
+  # Initialize working state from saved state when saved state changes
+  observeEvent(rv$cluster_collections, {
+    # Deep copy saved state to working state
+    rv$cluster_collections_working <- rv$cluster_collections
+  }, ignoreNULL = FALSE)
+  
   # Render annotation UI
   output$celltype_annotations_ui <- renderUI({
-    if (length(rv$celltype_annotations) == 0) {
+    if (length(rv$celltype_annotations_working) == 0) {
       return(tags$p(style = "color: #999; font-style: italic;", "Click 'Add Cell Type' to create annotations."))
     }
     
@@ -2860,7 +2923,7 @@ server <- function(input, output, session) {
       return(tags$p(style = "color: #dc3545;", "No clusters available. Load data with cluster assignments."))
     }
     
-    ann_ids <- names(rv$celltype_annotations)
+    ann_ids <- names(rv$celltype_annotations_working)
     n_annotations <- length(ann_ids)
     
     # Create grid layout with 2 columns
@@ -2873,7 +2936,7 @@ server <- function(input, output, session) {
       
       cols <- lapply(start_idx:end_idx, function(idx) {
         ann_id <- ann_ids[idx]
-        ann <- rv$celltype_annotations[[ann_id]]
+        ann <- rv$celltype_annotations_working[[ann_id]]
         
         column(
           6,  # 12/2 = 6 for 2 columns
@@ -2927,8 +2990,27 @@ server <- function(input, output, session) {
       return()
     }
     
+    # FIRST: Build a complete new working state by syncing all inputs
+    new_working_state <- rv$celltype_annotations_working
+    
+    if (length(new_working_state) > 0) {
+      ann_ids <- names(new_working_state)
+      for (ann_id in ann_ids) {
+        name_input <- input[[paste0("celltype_name_", ann_id)]]
+        clusters_input <- input[[paste0("celltype_clusters_", ann_id)]]
+        
+        if (!is.null(name_input)) {
+          new_working_state[[ann_id]]$name <- name_input
+        }
+        if (!is.null(clusters_input)) {
+          new_working_state[[ann_id]]$clusters <- clusters_input
+        }
+      }
+    }
+    
+    # THEN: Add new annotation to the new state
     # Initialize with cluster->cluster mapping if this is the first celltype
-    default_clusters <- if (length(rv$celltype_annotations) == 0) {
+    default_clusters <- if (length(new_working_state) == 0) {
       as.character(clusters)
     } else {
       character(0)
@@ -2937,22 +3019,47 @@ server <- function(input, output, session) {
     new_id <- celltype_id_counter() + 1
     celltype_id_counter(new_id)
     
-    rv$celltype_annotations[[as.character(new_id)]] <- list(
+    new_working_state[[as.character(new_id)]] <- list(
       id = new_id,
       name = paste0("Cell Type ", new_id),
       clusters = default_clusters
     )
+    
+    # FINALLY: Assign the complete new state (only ONE reactive trigger)
+    rv$celltype_annotations_working <- new_working_state
   })
   
   # Remove celltype buttons (dynamic observers)
   observe({
-    if (length(rv$celltype_annotations) == 0) return()
+    if (length(rv$celltype_annotations_working) == 0) return()
     
-    lapply(names(rv$celltype_annotations), function(ann_id) {
+    lapply(names(rv$celltype_annotations_working), function(ann_id) {
       observeEvent(input[[paste0("remove_celltype_", ann_id)]],
         {
-          # Remove this annotation
-          rv$celltype_annotations[[ann_id]] <- NULL
+          # Guard against shutdown
+          if (session$isEnded()) return()
+          
+          # FIRST: Build a complete new working state by syncing all inputs
+          new_working_state <- rv$celltype_annotations_working
+          
+          all_ann_ids <- names(new_working_state)
+          for (current_id in all_ann_ids) {
+            name_input <- input[[paste0("celltype_name_", current_id)]]
+            clusters_input <- input[[paste0("celltype_clusters_", current_id)]]
+            
+            if (!is.null(name_input)) {
+              new_working_state[[current_id]]$name <- name_input
+            }
+            if (!is.null(clusters_input)) {
+              new_working_state[[current_id]]$clusters <- clusters_input
+            }
+          }
+          
+          # THEN: Remove from the new state
+          new_working_state[[ann_id]] <- NULL
+          
+          # FINALLY: Assign the complete new state (only ONE reactive trigger)
+          rv$celltype_annotations_working <- new_working_state
         },
         ignoreInit = TRUE,
         ignoreNULL = TRUE,
@@ -2961,64 +3068,33 @@ server <- function(input, output, session) {
     })
   })
   
-  # Update dropdown choices to prevent duplicate cluster assignments
-  # This observer reads current input values and updates choices for OTHER annotations
-  observe({
-    if (length(rv$celltype_annotations) == 0) return()
-    
-    all_clusters <- as.character(available_clusters())
-    ann_ids <- names(rv$celltype_annotations)
-    
-    # For each annotation, update its dropdown choices
-    lapply(ann_ids, function(current_ann_id) {
-      # Get clusters selected in OTHER annotations by reading input values directly
-      clusters_selected_elsewhere <- character(0)
-      for (other_ann_id in setdiff(ann_ids, current_ann_id)) {
-        selected <- input[[paste0("celltype_clusters_", other_ann_id)]]
-        if (!is.null(selected) && length(selected) > 0) {
-          clusters_selected_elsewhere <- c(clusters_selected_elsewhere, selected)
-        }
-      }
-      
-      # Get currently selected clusters for THIS annotation
-      current_selected <- input[[paste0("celltype_clusters_", current_ann_id)]]
-      
-      # Available choices = all clusters - clusters selected elsewhere
-      available_choices <- setdiff(all_clusters, clusters_selected_elsewhere)
-      
-      # Update the picker with new choices, preserving current selection
-      updatePickerInput(
-        session = session,
-        inputId = paste0("celltype_clusters_", current_ann_id),
-        choices = available_choices,
-        selected = current_selected
-      )
-    })
-  })
+  # Remove the duplicate prevention observer since we now allow clusters in multiple celltypes
   
   # Apply annotations button
   observeEvent(input$apply_annotations, {
-    if (length(rv$celltype_annotations) == 0) {
+    if (length(rv$celltype_annotations_working) == 0) {
       showNotification("No cell type annotations defined.", type = "warning")
       return()
     }
     
-    # First, update rv$celltype_annotations with current input values
-    ann_ids <- names(rv$celltype_annotations)
+    # First, build a complete new working state by syncing all inputs
+    new_working_state <- rv$celltype_annotations_working
+    
+    ann_ids <- names(new_working_state)
     for (ann_id in ann_ids) {
       name_input <- input[[paste0("celltype_name_", ann_id)]]
       clusters_input <- input[[paste0("celltype_clusters_", ann_id)]]
       
-      if (!is.null(name_input) && !is.null(rv$celltype_annotations[[ann_id]])) {
-        rv$celltype_annotations[[ann_id]]$name <- name_input
+      if (!is.null(name_input)) {
+        new_working_state[[ann_id]]$name <- name_input
       }
-      if (!is.null(clusters_input) && !is.null(rv$celltype_annotations[[ann_id]])) {
-        rv$celltype_annotations[[ann_id]]$clusters <- clusters_input
+      if (!is.null(clusters_input)) {
+        new_working_state[[ann_id]]$clusters <- clusters_input
       }
     }
     
     # Validate: check for empty names
-    invalid_names <- sapply(rv$celltype_annotations, function(ann) {
+    invalid_names <- sapply(new_working_state, function(ann) {
       is.null(ann$name) || nchar(trimws(ann$name)) == 0
     })
     if (any(invalid_names)) {
@@ -3027,13 +3103,19 @@ server <- function(input, output, session) {
     }
     
     # Validate: check for duplicate names
-    all_names <- sapply(rv$celltype_annotations, function(ann) trimws(ann$name))
+    all_names <- sapply(new_working_state, function(ann) trimws(ann$name))
     if (any(duplicated(all_names))) {
       showNotification("Cell type names must be unique.", type = "error")
       return()
     }
     
-    # Build cluster_map from annotations
+    # Update working state (one reactive trigger)
+    rv$celltype_annotations_working <- new_working_state
+    
+    # Copy working state to saved state (updates cluster_map)
+    rv$celltype_annotations <- new_working_state
+    
+    # Build cluster_map from saved annotations
     cluster_map_list <- list()
     for (ann_id in names(rv$celltype_annotations)) {
       ann <- rv$celltype_annotations[[ann_id]]
@@ -3062,8 +3144,30 @@ server <- function(input, output, session) {
         stringsAsFactors = FALSE
       )
       
+      # Validate and update cell type collections
+      if (length(rv$cluster_collections) > 0) {
+        saved_celltype_names <- sapply(rv$celltype_annotations, function(ann) ann$name)
+        
+        for (coll_id in names(rv$cluster_collections)) {
+          coll <- rv$cluster_collections[[coll_id]]
+          if (!is.null(coll$type) && coll$type == "celltype") {
+            # Filter out celltypes that no longer exist
+            valid_items <- intersect(coll$items, saved_celltype_names)
+            if (length(valid_items) < length(coll$items)) {
+              removed <- setdiff(coll$items, valid_items)
+              message(sprintf("Collection '%s': removed non-existent cell types: %s", 
+                            coll$name, paste(removed, collapse = ", ")))
+            }
+            rv$cluster_collections[[coll_id]]$items <- valid_items
+          }
+        }
+        
+        # Also update working state to reflect these changes
+        rv$cluster_collections_working <- rv$cluster_collections
+      }
+      
       showNotification(
-        sprintf("Applied annotations: %d cell types, %d clusters assigned", 
+        sprintf("Applied annotations: %d cell types, %d clusters assigned. Cell type collections updated.", 
                 length(rv$celltype_annotations), length(all_clusters)),
         type = "message"
       )
@@ -3076,8 +3180,8 @@ server <- function(input, output, session) {
   # ========== CLUSTER COLLECTIONS ==========
   
   output$cluster_collections_ui <- renderUI({
-    if (length(rv$cluster_collections) == 0) {
-      return(tags$p(style = "color: #999; font-style: italic;", "Click 'Add Collection' to create cluster collections."))
+    if (length(rv$cluster_collections_working) == 0) {
+      return(tags$p(style = "color: #999; font-style: italic;", "Click 'Add Collection' to create cluster or cell type collections."))
     }
     
     clusters <- available_clusters()
@@ -3085,47 +3189,90 @@ server <- function(input, output, session) {
       return(tags$p(style = "color: #dc3545;", "No clusters available. Load data with cluster assignments."))
     }
     
-    coll_ids <- names(rv$cluster_collections)
+    # Get available celltypes from working annotations
+    available_celltypes <- if (length(rv$celltype_annotations_working) > 0) {
+      sapply(rv$celltype_annotations_working, function(ann) ann$name)
+    } else {
+      character(0)
+    }
     
-    collection_uis <- lapply(coll_ids, function(coll_id) {
-      coll <- rv$cluster_collections[[coll_id]]
+    coll_ids <- names(rv$cluster_collections_working)
+    n_collections <- length(coll_ids)
+    
+    # Create grid layout with 2 columns
+    n_cols <- 2
+    n_rows <- ceiling(n_collections / n_cols)
+    
+    rows <- lapply(seq_len(n_rows), function(row_idx) {
+      start_idx <- (row_idx - 1) * n_cols + 1
+      end_idx <- min(start_idx + n_cols - 1, n_collections)
       
-      tags$div(
-        id = paste0("collection_container_", coll_id),
-        style = "border: 1px solid #ddd; padding: 8px; margin-bottom: 8px; border-radius: 4px; background-color: #f9f9f9;",
-        fluidRow(
-          column(
-            4,
-            textInput(paste0("collection_name_", coll_id), "Collection Name", value = coll$name, placeholder = "e.g., T cell subsets")
-          ),
-          column(
-            7,
-            pickerInput(
-              paste0("collection_clusters_", coll_id),
-              "Clusters",
-              choices = as.character(clusters),
-              selected = coll$clusters,
-              multiple = TRUE,
-              options = list(
-                `actions-box` = TRUE,
-                `selected-text-format` = "count > 3",
-                `count-selected-text` = "{0} clusters"
+      cols <- lapply(start_idx:end_idx, function(idx) {
+        coll_id <- coll_ids[idx]
+        coll <- rv$cluster_collections_working[[coll_id]]
+        coll_type <- coll$type %||% "cluster"  # Default to cluster for backward compatibility
+        
+        # Determine choices based on type
+        choices <- if (coll_type == "celltype") {
+          as.character(available_celltypes)
+        } else {
+          as.character(clusters)
+        }
+        
+        column(
+          6,  # 12/2 = 6 for 2 columns
+          tags$div(
+            id = paste0("collection_container_", coll_id),
+            style = "border: 1px solid #ddd; padding: 10px; margin-bottom: 10px; border-radius: 4px; background-color: #f9f9f9;",
+            fluidRow(
+              column(
+                5,
+                textInput(paste0("collection_name_", coll_id), "Collection Name", value = coll$name, placeholder = "e.g., T cell subsets")
+              ),
+              column(
+                1,
+                br(),
+                actionButton(paste0("remove_collection_", coll_id), "",
+                  icon = icon("trash"), class = "btn-danger btn-sm",
+                  style = "margin-top: 5px;"
+                )
               )
-            )
-          ),
-          column(
-            1,
-            br(),
-            actionButton(paste0("remove_collection_", coll_id), "",
-              icon = icon("trash"), class = "btn-danger btn-sm",
-              style = "margin-top: 5px;"
+            ),
+            fluidRow(
+              column(
+                6,
+                radioButtons(paste0("collection_type_", coll_id), "Type",
+                  choices = c("Clusters" = "cluster", "Cell Types" = "celltype"),
+                  selected = coll_type,
+                  inline = TRUE
+                )
+              )
+            ),
+            fluidRow(
+              column(
+                12,
+                pickerInput(
+                  paste0("collection_items_", coll_id),
+                  if (coll_type == "celltype") "Cell Types" else "Clusters",
+                  choices = choices,
+                  selected = coll$items,
+                  multiple = TRUE,
+                  options = list(
+                    `actions-box` = TRUE,
+                    `selected-text-format` = "count > 3",
+                    `count-selected-text` = paste0("{0} ", if (coll_type == "celltype") "cell types" else "clusters")
+                  )
+                )
+              )
             )
           )
         )
-      )
+      })
+      
+      fluidRow(cols)
     })
     
-    tagList(collection_uis)
+    tagList(rows)
   })
   
   # Add collection button
@@ -3136,49 +3283,198 @@ server <- function(input, output, session) {
       return()
     }
     
+    # FIRST: Build a complete new working state by syncing all inputs
+    new_working_state <- rv$cluster_collections_working
+    
+    if (length(new_working_state) > 0) {
+      coll_ids <- names(new_working_state)
+      for (coll_id in coll_ids) {
+        name_input <- input[[paste0("collection_name_", coll_id)]]
+        type_input <- input[[paste0("collection_type_", coll_id)]]
+        items_input <- input[[paste0("collection_items_", coll_id)]]
+        
+        if (!is.null(name_input)) {
+          new_working_state[[coll_id]]$name <- name_input
+        }
+        if (!is.null(type_input)) {
+          new_working_state[[coll_id]]$type <- type_input
+        }
+        if (!is.null(items_input)) {
+          new_working_state[[coll_id]]$items <- items_input
+        }
+      }
+    }
+    
+    # THEN: Add new collection to the new state
     new_id <- collection_id_counter() + 1
     collection_id_counter(new_id)
     
-    rv$cluster_collections[[as.character(new_id)]] <- list(
+    new_working_state[[as.character(new_id)]] <- list(
       id = new_id,
       name = paste0("Collection ", new_id),
-      clusters = character(0)
+      type = "cluster",  # Default to cluster type
+      items = character(0)
     )
+    
+    # FINALLY: Assign the complete new state (only ONE reactive trigger)
+    rv$cluster_collections_working <- new_working_state
   })
   
   # Remove collection buttons (dynamic observers)
   observe({
-    if (length(rv$cluster_collections) == 0) return()
+    if (length(rv$cluster_collections_working) == 0) return()
     
-    lapply(names(rv$cluster_collections), function(coll_id) {
+    lapply(names(rv$cluster_collections_working), function(coll_id) {
       observeEvent(input[[paste0("remove_collection_", coll_id)]],
         {
-          rv$cluster_collections[[coll_id]] <- NULL
+          # Guard against shutdown
+          if (session$isEnded()) return()
+          
+          # FIRST: Build a complete new working state by syncing all inputs
+          new_working_state <- rv$cluster_collections_working
+          
+          all_coll_ids <- names(new_working_state)
+          for (current_id in all_coll_ids) {
+            name_input <- input[[paste0("collection_name_", current_id)]]
+            type_input <- input[[paste0("collection_type_", current_id)]]
+            items_input <- input[[paste0("collection_items_", current_id)]]
+            
+            if (!is.null(name_input)) {
+              new_working_state[[current_id]]$name <- name_input
+            }
+            if (!is.null(type_input)) {
+              new_working_state[[current_id]]$type <- type_input
+            }
+            if (!is.null(items_input)) {
+              new_working_state[[current_id]]$items <- items_input
+            }
+          }
+          
+          # THEN: Remove from the new state
+          new_working_state[[coll_id]] <- NULL
+          
+          # FINALLY: Assign the complete new state (only ONE reactive trigger)
+          rv$cluster_collections_working <- new_working_state
         },
         ignoreInit = TRUE
       )
     })
   })
   
-  # Cache collections when user navigates away from Annotation tab
-  # Read current input values to capture any edits made by user
-  observeEvent(input$main_tab, {
-    if (input$main_tab != "Annotation") {
-      # Update rv$cluster_collections with current input values before caching
-      if (length(rv$cluster_collections) > 0) {
-        coll_ids <- names(rv$cluster_collections)
-        for (coll_id in coll_ids) {
-          name_input <- input[[paste0("collection_name_", coll_id)]]
-          clusters_input <- input[[paste0("collection_clusters_", coll_id)]]
+  # Observer to update dropdown choices when collection type changes
+  observe({
+    if (length(rv$cluster_collections_working) == 0) return()
+    
+    clusters <- available_clusters()
+    available_celltypes <- if (length(rv$celltype_annotations_working) > 0) {
+      sapply(rv$celltype_annotations_working, function(ann) ann$name)
+    } else {
+      character(0)
+    }
+    
+    lapply(names(rv$cluster_collections_working), function(coll_id) {
+      type_input_id <- paste0("collection_type_", coll_id)
+      items_input_id <- paste0("collection_items_", coll_id)
+      
+      observeEvent(input[[type_input_id]], {
+        # Guard against shutdown
+        if (session$isEnded()) return()
+        
+        selected_type <- input[[type_input_id]]
+        if (is.null(selected_type)) return()
+        
+        # FIRST: Build a complete new working state by syncing all inputs
+        # This prevents multiple reactive triggers that could cause intermediate renders
+        new_working_state <- rv$cluster_collections_working
+        
+        all_coll_ids <- names(new_working_state)
+        for (current_id in all_coll_ids) {
+          name_input <- input[[paste0("collection_name_", current_id)]]
+          type_input <- input[[paste0("collection_type_", current_id)]]
+          items_input <- input[[paste0("collection_items_", current_id)]]
           
-          if (!is.null(name_input) && !is.null(rv$cluster_collections[[coll_id]])) {
-            rv$cluster_collections[[coll_id]]$name <- name_input
+          if (!is.null(name_input)) {
+            new_working_state[[current_id]]$name <- name_input
           }
-          if (!is.null(clusters_input) && !is.null(rv$cluster_collections[[coll_id]])) {
-            rv$cluster_collections[[coll_id]]$clusters <- clusters_input
+          if (!is.null(type_input)) {
+            new_working_state[[current_id]]$type <- type_input
+          }
+          if (!is.null(items_input)) {
+            new_working_state[[current_id]]$items <- items_input
           }
         }
+        
+        # THEN: Update choices based on type for THIS collection
+        new_choices <- if (selected_type == "celltype") {
+          as.character(available_celltypes)
+        } else {
+          as.character(clusters)
+        }
+        
+        # Update picker with new choices (clear selection since items are different)
+        # Wrap in tryCatch to handle shutdown gracefully
+        tryCatch({
+          updatePickerInput(
+            session = session,
+            inputId = items_input_id,
+            choices = new_choices,
+            selected = character(0)
+          )
+        }, error = function(e) {
+          # Silently ignore errors during shutdown
+          NULL
+        })
+        
+        # Update THIS collection specifically (clear items on type change)
+        new_working_state[[coll_id]]$type <- selected_type
+        new_working_state[[coll_id]]$items <- character(0)  # Clear items on type change
+        
+        # FINALLY: Assign the complete new state (only ONE reactive trigger)
+        rv$cluster_collections_working <- new_working_state
+      }, ignoreInit = TRUE)
+    })
+  })
+  
+  # Update Collections button - syncs working state to saved state
+  observeEvent(input$save_collections, {
+    if (length(rv$cluster_collections_working) == 0) {
+      showNotification("No collections to save.", type = "warning")
+      return()
+    }
+    
+    # First, build a complete new working state by syncing all inputs
+    new_working_state <- rv$cluster_collections_working
+    
+    coll_ids <- names(new_working_state)
+    for (coll_id in coll_ids) {
+      name_input <- input[[paste0("collection_name_", coll_id)]]
+      type_input <- input[[paste0("collection_type_", coll_id)]]
+      items_input <- input[[paste0("collection_items_", coll_id)]]
+      
+      if (!is.null(name_input)) {
+        new_working_state[[coll_id]]$name <- name_input
       }
+      if (!is.null(type_input)) {
+        new_working_state[[coll_id]]$type <- type_input
+      }
+      if (!is.null(items_input)) {
+        new_working_state[[coll_id]]$items <- items_input
+      }
+    }
+    
+    # Update working state (one reactive trigger)
+    rv$cluster_collections_working <- new_working_state
+    
+    # Now copy working state to saved state (this triggers reactivity in rest of app)
+    rv$cluster_collections <- new_working_state
+    
+    showNotification("Collections updated successfully. Other tabs will now use these collections.", type = "message", duration = 3)
+  })
+  
+  # Cache collections when user navigates away from Collections tab
+  # Cache the SAVED state (not working state) - only saved collections affect other tabs
+  observeEvent(input$main_tab, {
+    if (input$main_tab != "Collections") {
       rv$cluster_collections_cached <- rv$cluster_collections
     }
   })
@@ -3314,8 +3610,22 @@ server <- function(input, output, session) {
       return(NULL)
     }
     
-    coll_choices <- names(collections)
-    names(coll_choices) <- sapply(collections, function(x) x$name)
+    # Filter collections based on selected entity type
+    entity_type <- input$test_entity %||% "Clusters"
+    desired_type <- if (entity_type == "Celltypes") "celltype" else "cluster"
+    
+    # Filter to only collections matching the desired type
+    filtered_collections <- Filter(function(coll) {
+      coll_type <- coll$type %||% "cluster"
+      coll_type == desired_type
+    }, collections)
+    
+    if (length(filtered_collections) == 0) {
+      return(NULL)
+    }
+    
+    coll_choices <- names(filtered_collections)
+    names(coll_choices) <- sapply(filtered_collections, function(x) x$name)
     
     pickerInput(
       "test_collections",
@@ -3324,7 +3634,7 @@ server <- function(input, output, session) {
       selected = character(0),
       multiple = TRUE,
       options = list(
-        `none-selected-text` = "All clusters/celltypes",
+        `none-selected-text` = paste0("All ", tolower(entity_type)),
         `actions-box` = TRUE
       )
     )
@@ -3337,8 +3647,22 @@ server <- function(input, output, session) {
       return(NULL)
     }
     
-    coll_choices <- names(collections)
-    names(coll_choices) <- sapply(collections, function(x) x$name)
+    # Filter collections based on selected entity type
+    entity_type <- input$cat_entity %||% "Clusters"
+    desired_type <- if (entity_type == "Celltypes") "celltype" else "cluster"
+    
+    # Filter to only collections matching the desired type
+    filtered_collections <- Filter(function(coll) {
+      coll_type <- coll$type %||% "cluster"
+      coll_type == desired_type
+    }, collections)
+    
+    if (length(filtered_collections) == 0) {
+      return(NULL)
+    }
+    
+    coll_choices <- names(filtered_collections)
+    names(coll_choices) <- sapply(filtered_collections, function(x) x$name)
     
     pickerInput(
       "cat_collections",
@@ -3347,7 +3671,7 @@ server <- function(input, output, session) {
       selected = character(0),
       multiple = TRUE,
       options = list(
-        `none-selected-text` = "All clusters/celltypes",
+        `none-selected-text` = paste0("All ", tolower(entity_type)),
         `actions-box` = TRUE
       )
     )
@@ -3360,8 +3684,22 @@ server <- function(input, output, session) {
       return(NULL)
     }
     
-    coll_choices <- names(collections)
-    names(coll_choices) <- sapply(collections, function(x) x$name)
+    # Filter collections based on selected entity type
+    entity_type <- input$cont_entity %||% "Clusters"
+    desired_type <- if (entity_type == "Celltypes") "celltype" else "cluster"
+    
+    # Filter to only collections matching the desired type
+    filtered_collections <- Filter(function(coll) {
+      coll_type <- coll$type %||% "cluster"
+      coll_type == desired_type
+    }, collections)
+    
+    if (length(filtered_collections) == 0) {
+      return(NULL)
+    }
+    
+    coll_choices <- names(filtered_collections)
+    names(coll_choices) <- sapply(filtered_collections, function(x) x$name)
     
     pickerInput(
       "cont_collections",
@@ -3370,7 +3708,7 @@ server <- function(input, output, session) {
       selected = character(0),
       multiple = TRUE,
       options = list(
-        `none-selected-text` = "All clusters/celltypes",
+        `none-selected-text` = paste0("All ", tolower(entity_type)),
         `actions-box` = TRUE
       )
     )
@@ -3790,7 +4128,26 @@ server <- function(input, output, session) {
     for (coll_id in names(collections)) {
       coll <- collections[[coll_id]]
       coll_name <- coll$name
-      for (cl in coll$clusters) {
+      coll_type <- coll$type %||% "cluster"
+      
+      # Get clusters for this collection
+      clusters_to_map <- character(0)
+      if (coll_type == "celltype") {
+        # Resolve celltypes to clusters using rv$cluster_map
+        if (!is.null(rv$cluster_map) && length(coll$items) > 0) {
+          cm <- rv$cluster_map
+          for (ct in coll$items) {
+            matching_clusters <- cm$cluster[cm$celltype == ct]
+            clusters_to_map <- c(clusters_to_map, as.character(matching_clusters))
+          }
+        }
+      } else {
+        # Use items directly as cluster IDs
+        clusters_to_map <- coll$items
+      }
+      
+      # Map each cluster to this collection name
+      for (cl in clusters_to_map) {
         if (is.null(cluster_map[[cl]])) {
           cluster_map[[cl]] <- character(0)
         }
@@ -3811,12 +4168,27 @@ server <- function(input, output, session) {
       return(entities)
     }
     
-    # Get all clusters from selected collections
+    # Get all clusters from selected collections (resolving celltype collections to clusters)
     selected_clusters <- character(0)
     for (coll_id in selected_coll_ids) {
       coll_id_char <- as.character(coll_id)
       if (!is.null(collections[[coll_id_char]])) {
-        selected_clusters <- c(selected_clusters, collections[[coll_id_char]]$clusters)
+        coll <- collections[[coll_id_char]]
+        coll_type <- coll$type %||% "cluster"
+        
+        if (coll_type == "celltype") {
+          # Resolve celltypes to clusters using rv$cluster_map
+          if (!is.null(rv$cluster_map) && length(coll$items) > 0) {
+            cm <- rv$cluster_map
+            for (ct in coll$items) {
+              matching_clusters <- cm$cluster[cm$celltype == ct]
+              selected_clusters <- c(selected_clusters, as.character(matching_clusters))
+            }
+          }
+        } else {
+          # Use items directly as cluster IDs
+          selected_clusters <- c(selected_clusters, coll$items)
+        }
       }
     }
     selected_clusters <- unique(selected_clusters)

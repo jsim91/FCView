@@ -61,11 +61,47 @@ run_fcview <- function(launch.browser = TRUE, port = NULL, host = "127.0.0.1", .
     stop("Could not find FCView app directory. Please reinstall the package.")
   }
 
-  shiny::runApp(
-    appDir = app_dir,
-    launch.browser = launch.browser,
-    port = port,
-    host = host,
-    ...
+  # Store original error handling options
+  old_error <- getOption("error")
+  old_show_error_messages <- getOption("show.error.messages")
+  
+  # Temporarily disable RStudio's break-on-error during shutdown
+  on.exit({
+    options(error = old_error, show.error.messages = old_show_error_messages)
+  }, add = TRUE)
+  
+  # Set options to prevent debugger from triggering on shutdown
+  options(show.error.messages = TRUE)
+  options(error = NULL)
+  
+  # Wrap in tryCatch to handle interrupts cleanly
+  result <- tryCatch(
+    {
+      shiny::runApp(
+        appDir = app_dir,
+        launch.browser = launch.browser,
+        port = port,
+        host = host,
+        ...
+      )
+    },
+    interrupt = function(e) {
+      # User interrupted (Escape key) - clean exit without entering debugger
+      message("\nApp stopped by user")
+      invisible(NULL)
+    },
+    error = function(e) {
+      # Check if it's a benign shutdown error
+      if (grepl("later|callback|exec|session.*close", as.character(e), ignore.case = TRUE)) {
+        # Suppress expected shutdown errors
+        invisible(NULL)
+      } else {
+        # Report genuine errors
+        message("Error in FCView: ", conditionMessage(e))
+        invisible(NULL)
+      }
+    }
   )
+  
+  invisible(result)
 }

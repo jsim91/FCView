@@ -36,10 +36,18 @@ The input object, saved in .RData format, should contain the following elements,
   - cluster `[required]`
   - cluster_heatmap `[required]`
 
-See [FEATURES.md](FEATURES.md) for a full list of app features (general and comprehensive).
-For compatibility, the cluster element should be renamed to "cluster" and the heatmap element renamed to "cluster_heatmap", no matter what algorithm was used during the calculation phase. The heatmap plot object can be dropped to shrink file size. Only the underlying heatmap matrix data is required. See layout below for more on this.
+See [FEATURES.md](FEATURES.md) for a full list of app features (general and comprehensive). See layout below for more on input formatting. ```FCSimple::fcs_prepare_fcview_object``` should do the heavy lifting as long as the following functions have been run on your analysis object:
+  - ```FCSimple::fcs_join```
+  - ```FCSimple::fcs_reduce_dimensions```
+  - ```FCSimple::fcs_cluster```
+  - ```FCSimple::fcs_cluster_heatmap```
+  - ```FCSimple::fcs_calculate_abundance``` with report_as = 'frequency'
+  - ```FCSimple::fcs_calculate_abundance``` with report_as = 'count'
 
-**Recommended Object Layout**
+Additionally:
+  - ```FCSimple::fcs_add_metadata``` can be used to add additional metadata, such as clinical endpoints, time points, demographic features, etc that are associated with your samples.
+
+**Object Layout**
 
 Top-level structure
 
@@ -85,7 +93,7 @@ Top-level structure
 
 ## Preparing Data for FCView
 
-The easiest way to prepare your FCSimple analysis object for FCView is to use the `fcs_prepare_fcview_object()` function:
+Again, the easiest way to prepare your FCSimple analysis object for FCView is to use the `fcs_prepare_fcview_object()` function:
 
 ```r
 # Prepare object with downsampling and save to file

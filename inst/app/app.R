@@ -9158,8 +9158,18 @@ server <- function(input, output, session) {
         geom_vline(xintercept = 0, linetype = "dashed", color = "grey30") +
         geom_errorbar(aes(xmin = c_lower, xmax = c_upper, color = c_FDR < 0.05), linewidth = 0.8, width = 0.5) +
         geom_point(mapping = aes(fill = c_FDR < 0.05), size = 4, pch = 21, stroke = 0.4, color = "black") +
-        scale_color_manual(values = c("grey30", "red")) +
-        scale_fill_manual(values = c("grey30", "red")) +
+        scale_color_manual(
+          values = c("FALSE" = "grey30", "TRUE" = "red"),
+          breaks = c(FALSE, TRUE),
+          labels = c("Not significant", "Significant"),
+          drop = FALSE
+        ) +
+        scale_fill_manual(
+          values = c("FALSE" = "grey30", "TRUE" = "red"),
+          breaks = c(FALSE, TRUE),
+          labels = c("Not significant", "Significant"),
+          drop = FALSE
+        ) +
         labs(
           x = "Credible interval\n(log-odds scale)",
           y = "Cell Group",

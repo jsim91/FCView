@@ -156,6 +156,45 @@ compute_multiROC <- function(preds) {
   roc_res
 }
 
+# Aggregate clusters to celltypes
+aggregate_to_celltypes <- function(mat, cluster_map, type = "abundance") {
+  # mat: matrix with samples as rows, clusters as columns
+  # cluster_map: data.frame with 'cluster' and 'celltype' columns
+  # type: "abundance" or "counts" (determines summing behavior)
+  
+  if (is.null(cluster_map) || nrow(cluster_map) == 0) {
+    stop("No cluster_map available for celltype aggregation")
+  }
+  
+  cm <- cluster_map
+  keep <- cm$cluster %in% colnames(mat)
+  cm <- cm[keep, , drop = FALSE]
+  
+  if (!nrow(cm)) {
+    stop("No overlapping clusters to aggregate into celltypes")
+  }
+  
+  # Split clusters by celltype and sum
+  split_idx <- split(cm$cluster, cm$celltype)
+  aggregated <- sapply(split_idx, function(cols) {
+    if (length(cols) == 1) {
+      mat[, cols]
+    } else {
+      rowSums(mat[, cols, drop = FALSE])
+    }
+  })
+  
+  # Ensure it's a matrix
+  aggregated <- as.matrix(aggregated)
+  
+  # For counts, convert to integer (sccomp requires integer counts)
+  if (type == "counts") {
+    storage.mode(aggregated) <- "integer"
+  }
+  
+  return(aggregated)
+}
+
 # Validate minimal structure
 validateInput <- function(obj, id_col = NULL) {
   required <- c("data", "source", "metadata", "cluster")
@@ -888,7 +927,7 @@ ui <- navbarPage(
         selectInput("p_adj_method", "P‑value adjustment method",
           choices = c("BH", "bonferroni", "BY", "fdr"), selected = "BH"
         ),
-        actionButton("run_test", "Run tests"),
+        actionButton("run_test", "Run tests", class = "btn-primary"),
         br(), br(),
         conditionalPanel(
           condition = "output.hasValidResults",
@@ -934,7 +973,7 @@ ui <- navbarPage(
         br(),
         uiOutput("cat_color_pickers_ui"),
         br(),
-        actionButton("generate_cat_plots", "Generate plots"),
+        actionButton("generate_cat_plots", "Generate plots", class = "btn-primary"),
         br(), br(),
         conditionalPanel(
           condition = "output.hasValidCatResults",
@@ -970,7 +1009,7 @@ ui <- navbarPage(
         checkboxInput("cont_use_adj_p", "Plot adjusted pvalues", value = TRUE),
         checkboxInput("cont_transpose", "Transpose axes", value = FALSE),
         selectInput("cont_max_facets", "Facet columns", choices = 2:6, selected = 4),
-        actionButton("generate_cont_plots", "Generate plots"),
+        actionButton("generate_cont_plots", "Generate plots", class = "btn-primary"),
         br(), br(),
         conditionalPanel(
           condition = "output.hasContResults",
@@ -996,16 +1035,16 @@ ui <- navbarPage(
     fluidRow(
       column(
         2,
+        pickerInput("fs_entity", "Entity", choices = c("Clusters", "Celltypes"), selected = "Clusters"),
+        uiOutput("fs_collections_ui"),
         pickerInput("fs_method", "Method",
           choices = c("Ridge Regression", "Elastic Net", "Random Forest (Boruta)")
         ),
         pickerInput("fs_outcome", "Outcome variable", choices = NULL),
         pickerInput("fs_predictors", "Predictor(s)", choices = NULL, multiple = TRUE),
         conditionalPanel(
-          condition = "input.fs_predictors.includes('cluster')",
-          pickerInput("fs_cluster_subset", "Select clusters to include",
-            choices = NULL, multiple = TRUE
-          )
+          condition = "input.fs_predictors.includes('cluster') || input.fs_predictors.includes('celltypes')",
+          uiOutput("fs_entity_subset_ui")
         ),
         conditionalPanel(
           condition = "input.fs_method == 'Elastic Net'",
@@ -1013,7 +1052,7 @@ ui <- navbarPage(
             min = 0, max = 1, value = 0.5, step = 0.05
           )
         ),
-        actionButton("run_fs", "Run Feature Selection"),
+        actionButton("run_fs", "Run Feature Selection", class = "btn-primary"),
         br(), br(),
         conditionalPanel(
           condition = "output.hasFSResults",
@@ -1049,11 +1088,13 @@ ui <- navbarPage(
     fluidRow(
       column(
         2,
+        pickerInput("lm_entity", "Entity", choices = c("Clusters", "Celltypes"), selected = "Clusters"),
+        uiOutput("lm_collections_ui"),
         pickerInput("lm_outcome", "Outcome variable", choices = NULL),
         pickerInput("lm_predictors", "Predictor(s)", choices = NULL, multiple = TRUE),
         conditionalPanel(
-          condition = "input.lm_predictors.includes('cluster')",
-          pickerInput("lm_cluster_subset", "Select clusters to include", choices = NULL, multiple = TRUE)
+          condition = "input.lm_predictors.includes('cluster') || input.lm_predictors.includes('celltypes')",
+          uiOutput("lm_entity_subset_ui")
         ),
         hr(),
         radioButtons("lm_model_type", "Model type",
@@ -1102,7 +1143,7 @@ ui <- navbarPage(
           condition = "input.lm_validation == 'k-fold CV'",
           numericInput("lm_k", "Number of folds", value = 5, min = 2, max = 20)
         ),
-        actionButton("run_lm", "Run Model"),
+        actionButton("run_lm", "Run Model", class = "btn-primary"),
         br(), br(),
         conditionalPanel(
           condition = "output.hasLMResults",
@@ -1148,11 +1189,13 @@ ui <- navbarPage(
     fluidRow(
       column(
         3,
+        pickerInput("reg_entity", "Entity", choices = c("Clusters", "Celltypes"), selected = "Clusters"),
+        uiOutput("reg_collections_ui"),
         pickerInput("reg_outcome", "Outcome variable (continuous)", choices = NULL),
         pickerInput("reg_predictors", "Predictor(s)", choices = NULL, multiple = TRUE),
         conditionalPanel(
-          condition = "input.reg_predictors.includes('cluster')",
-          pickerInput("reg_cluster_subset", "Select clusters to include", choices = NULL, multiple = TRUE)
+          condition = "input.reg_predictors.includes('cluster') || input.reg_predictors.includes('celltypes')",
+          uiOutput("reg_entity_subset_ui")
         ),
         hr(),
         radioButtons("reg_model_type", "Model type",
@@ -1201,7 +1244,7 @@ ui <- navbarPage(
           condition = "input.reg_validation == 'k-fold CV'",
           numericInput("reg_k", "Number of folds", value = 5, min = 2, max = 20)
         ),
-        actionButton("run_reg", "Run Model"),
+        actionButton("run_reg", "Run Model", class = "btn-primary"),
         br(), br(),
         conditionalPanel(
           condition = "output.hasRegResults",
@@ -1247,6 +1290,8 @@ ui <- navbarPage(
     fluidRow(
       column(
         3,
+        pickerInput("sccomp_entity", "Entity", choices = c("Clusters", "Celltypes"), selected = "Clusters"),
+        uiOutput("sccomp_collections_ui"),
         helpText("sccomp tests for differential composition of cell types/clusters across sample groups."),
         radioButtons("sccomp_formula_mode", "Formula mode",
           choices = c("Simple" = "simple", "Custom" = "custom"),
@@ -1301,9 +1346,14 @@ ui <- navbarPage(
           textInput("sccomp_contrast", "Contrast specification",
             placeholder = "e.g., `conditionTreated` - `conditionControl`"
           ),
-          actionButton("run_sccomp_test", "Run contrast", class = "btn-secondary"),
+          actionButton("run_sccomp_test", "Run contrast", class = "btn-primary"),
           br(), br(),
-          downloadButton("export_sccomp_results", "Export results as CSV"),
+          downloadButton("export_sccomp_results", "Export sccomp test result as CSV"),
+          conditionalPanel(
+            condition = "output.hasSccompTestResults",
+            br(),
+            downloadButton("export_sccomp_contrast_results", "Export sccomp contrast result as CSV")
+          ),
           br(), br(),
           actionButton("reset_sccomp", "Clear Results")
         )
@@ -1360,6 +1410,8 @@ ui <- navbarPage(
     fluidRow(
       column(
         3,
+        pickerInput("surv_entity", "Entity", choices = c("Clusters", "Celltypes"), selected = "Clusters"),
+        uiOutput("surv_collections_ui"),
         pickerInput("surv_outcome", "Time-to-event variable (continuous)", choices = NULL),
         hr(),
         selectInput("surv_analysis_mode", "Mode:",
@@ -1394,8 +1446,8 @@ ui <- navbarPage(
         hr(),
         pickerInput("surv_predictors", "Predictor(s)", choices = NULL, multiple = TRUE),
         conditionalPanel(
-          condition = "input.surv_predictors.includes('cluster')",
-          pickerInput("surv_cluster_subset", "Select clusters to include", choices = NULL, multiple = TRUE)
+          condition = "input.surv_predictors.includes('cluster') || input.surv_predictors.includes('celltypes')",
+          uiOutput("surv_entity_subset_ui")
         ),
         hr(),
         selectInput("surv_split_method", "Split risk score group by:",
@@ -1459,18 +1511,6 @@ ui <- navbarPage(
 
 # ---- Server ----
 server <- function(input, output, session) {
-  # Add handler for clean shutdown
-  onStop(function() {
-    # Suppress errors during shutdown - this prevents RStudio debugger from triggering
-    # on innocuous cleanup errors in the later/shiny event loop
-    suppressWarnings({
-      suppressMessages({
-        # Clean up any pending observers
-        session$close()
-      })
-    })
-  })
-  
   # App-wide stores
   rv <- reactiveValues(
     obj = NULL,
@@ -3713,6 +3753,331 @@ server <- function(input, output, session) {
       )
     )
   })
+  
+  # Render collection filter UI for Feature Selection tab
+  output$fs_collections_ui <- renderUI({
+    collections <- rv$cluster_collections_cached
+    if (length(collections) == 0) {
+      return(NULL)
+    }
+    
+    entity_type <- input$fs_entity %||% "Clusters"
+    desired_type <- if (entity_type == "Celltypes") "celltype" else "cluster"
+    
+    filtered_collections <- Filter(function(coll) {
+      coll_type <- coll$type %||% "cluster"
+      coll_type == desired_type
+    }, collections)
+    
+    if (length(filtered_collections) == 0) {
+      return(NULL)
+    }
+    
+    coll_choices <- names(filtered_collections)
+    names(coll_choices) <- sapply(filtered_collections, function(x) x$name)
+    
+    pickerInput(
+      "fs_collections",
+      "Filter by collections (optional)",
+      choices = coll_choices,
+      selected = character(0),
+      multiple = TRUE,
+      options = list(
+        `none-selected-text` = paste0("All ", tolower(entity_type)),
+        `actions-box` = TRUE
+      )
+    )
+  })
+  
+  # Render collection filter UI for Classification tab
+  output$lm_collections_ui <- renderUI({
+    collections <- rv$cluster_collections_cached
+    if (length(collections) == 0) {
+      return(NULL)
+    }
+    
+    entity_type <- input$lm_entity %||% "Clusters"
+    desired_type <- if (entity_type == "Celltypes") "celltype" else "cluster"
+    
+    filtered_collections <- Filter(function(coll) {
+      coll_type <- coll$type %||% "cluster"
+      coll_type == desired_type
+    }, collections)
+    
+    if (length(filtered_collections) == 0) {
+      return(NULL)
+    }
+    
+    coll_choices <- names(filtered_collections)
+    names(coll_choices) <- sapply(filtered_collections, function(x) x$name)
+    
+    pickerInput(
+      "lm_collections",
+      "Filter by collections (optional)",
+      choices = coll_choices,
+      selected = character(0),
+      multiple = TRUE,
+      options = list(
+        `none-selected-text` = paste0("All ", tolower(entity_type)),
+        `actions-box` = TRUE
+      )
+    )
+  })
+  
+  # Render collection filter UI for Regression tab
+  output$reg_collections_ui <- renderUI({
+    collections <- rv$cluster_collections_cached
+    if (length(collections) == 0) {
+      return(NULL)
+    }
+    
+    entity_type <- input$reg_entity %||% "Clusters"
+    desired_type <- if (entity_type == "Celltypes") "celltype" else "cluster"
+    
+    filtered_collections <- Filter(function(coll) {
+      coll_type <- coll$type %||% "cluster"
+      coll_type == desired_type
+    }, collections)
+    
+    if (length(filtered_collections) == 0) {
+      return(NULL)
+    }
+    
+    coll_choices <- names(filtered_collections)
+    names(coll_choices) <- sapply(filtered_collections, function(x) x$name)
+    
+    pickerInput(
+      "reg_collections",
+      "Filter by collections (optional)",
+      choices = coll_choices,
+      selected = character(0),
+      multiple = TRUE,
+      options = list(
+        `none-selected-text` = paste0("All ", tolower(entity_type)),
+        `actions-box` = TRUE
+      )
+    )
+  })
+  
+  # Render collection filter UI for sccomp tab
+  output$sccomp_collections_ui <- renderUI({
+    collections <- rv$cluster_collections_cached
+    if (length(collections) == 0) {
+      return(NULL)
+    }
+    
+    entity_type <- input$sccomp_entity %||% "Clusters"
+    desired_type <- if (entity_type == "Celltypes") "celltype" else "cluster"
+    
+    filtered_collections <- Filter(function(coll) {
+      coll_type <- coll$type %||% "cluster"
+      coll_type == desired_type
+    }, collections)
+    
+    if (length(filtered_collections) == 0) {
+      return(NULL)
+    }
+    
+    coll_choices <- names(filtered_collections)
+    names(coll_choices) <- sapply(filtered_collections, function(x) x$name)
+    
+    pickerInput(
+      "sccomp_collections",
+      "Filter by collections (optional)",
+      choices = coll_choices,
+      selected = character(0),
+      multiple = TRUE,
+      options = list(
+        `none-selected-text` = paste0("All ", tolower(entity_type)),
+        `actions-box` = TRUE
+      )
+    )
+  })
+  
+  # Render collection filter UI for Time to Event tab
+  output$surv_collections_ui <- renderUI({
+    collections <- rv$cluster_collections_cached
+    if (length(collections) == 0) {
+      return(NULL)
+    }
+    
+    entity_type <- input$surv_entity %||% "Clusters"
+    desired_type <- if (entity_type == "Celltypes") "celltype" else "cluster"
+    
+    filtered_collections <- Filter(function(coll) {
+      coll_type <- coll$type %||% "cluster"
+      coll_type == desired_type
+    }, collections)
+    
+    if (length(filtered_collections) == 0) {
+      return(NULL)
+    }
+    
+    coll_choices <- names(filtered_collections)
+    names(coll_choices) <- sapply(filtered_collections, function(x) x$name)
+    
+    pickerInput(
+      "surv_collections",
+      "Filter by collections (optional)",
+      choices = coll_choices,
+      selected = character(0),
+      multiple = TRUE,
+      options = list(
+        `none-selected-text` = paste0("All ", tolower(entity_type)),
+        `actions-box` = TRUE
+      )
+    )
+  })
+
+  # Render entity subset UI for Feature Selection tab
+  output$fs_entity_subset_ui <- renderUI({
+    entity_type <- input$fs_entity %||% "Clusters"
+    
+    if (entity_type == "Celltypes" && !is.null(rv$cluster_map)) {
+      choices <- unique(rv$cluster_map$celltype)
+      label <- "Select celltypes to include"
+    } else {
+      choices <- if (!is.null(rv$abundance_sample)) colnames(rv$abundance_sample) else character(0)
+      label <- "Select clusters to include"
+    }
+    
+    pickerInput("fs_cluster_subset", label, choices = choices, multiple = TRUE, selected = character(0))
+  })
+  
+  # Render entity subset UI for Classification tab
+  output$lm_entity_subset_ui <- renderUI({
+    entity_type <- input$lm_entity %||% "Clusters"
+    
+    if (entity_type == "Celltypes" && !is.null(rv$cluster_map)) {
+      choices <- unique(rv$cluster_map$celltype)
+      label <- "Select celltypes to include"
+    } else {
+      choices <- if (!is.null(rv$abundance_sample)) colnames(rv$abundance_sample) else character(0)
+      label <- "Select clusters to include"
+    }
+    
+    pickerInput("lm_cluster_subset", label, choices = choices, multiple = TRUE, selected = character(0))
+  })
+  
+  # Render entity subset UI for Regression tab
+  output$reg_entity_subset_ui <- renderUI({
+    entity_type <- input$reg_entity %||% "Clusters"
+    
+    if (entity_type == "Celltypes" && !is.null(rv$cluster_map)) {
+      choices <- unique(rv$cluster_map$celltype)
+      label <- "Select celltypes to include"
+    } else {
+      choices <- if (!is.null(rv$abundance_sample)) colnames(rv$abundance_sample) else character(0)
+      label <- "Select clusters to include"
+    }
+    
+    pickerInput("reg_cluster_subset", label, choices = choices, multiple = TRUE, selected = character(0))
+  })
+  
+  # Render entity subset UI for Time to Event tab
+  output$surv_entity_subset_ui <- renderUI({
+    entity_type <- input$surv_entity %||% "Clusters"
+    
+    if (entity_type == "Celltypes" && !is.null(rv$cluster_map)) {
+      choices <- unique(rv$cluster_map$celltype)
+      label <- "Select celltypes to include"
+    } else {
+      choices <- if (!is.null(rv$abundance_sample)) colnames(rv$abundance_sample) else character(0)
+      label <- "Select clusters to include"
+    }
+    
+    pickerInput("surv_cluster_subset", label, choices = choices, multiple = TRUE, selected = character(0))
+  })
+
+  # Observer: Update Feature Selection predictor choices based on entity
+  observeEvent(input$fs_entity, {
+    req(rv$meta_sample)
+    entity_type <- input$fs_entity %||% "Clusters"
+    entity_name <- if (entity_type == "Celltypes") "celltypes" else "cluster"
+    
+    meta_cols <- colnames(rv$meta_sample)
+    predictor_choices <- sort(setdiff(meta_cols, c("patient_ID", "source", "run_date")))
+    predictor_choices_with_entity <- c(predictor_choices, entity_name)
+    
+    # Get current selection and replace cluster/celltypes
+    current_selection <- input$fs_predictors
+    if (!is.null(current_selection)) {
+      current_selection <- setdiff(current_selection, c("cluster", "celltypes"))
+      if (entity_name %in% c("cluster", "celltypes")) {
+        current_selection <- c(current_selection, entity_name)
+      }
+    }
+    
+    updatePickerInput(session, "fs_predictors", choices = predictor_choices_with_entity, selected = current_selection)
+  }, ignoreNULL = FALSE, ignoreInit = TRUE)
+  
+  # Observer: Update Classification predictor choices based on entity
+  observeEvent(input$lm_entity, {
+    req(rv$meta_sample)
+    entity_type <- input$lm_entity %||% "Clusters"
+    entity_name <- if (entity_type == "Celltypes") "celltypes" else "cluster"
+    
+    meta_cols <- colnames(rv$meta_sample)
+    predictor_choices <- sort(setdiff(meta_cols, c("patient_ID", "source", "run_date")))
+    predictor_choices_with_entity <- c(predictor_choices, entity_name)
+    
+    # Get current selection and replace cluster/celltypes
+    current_selection <- input$lm_predictors
+    if (!is.null(current_selection)) {
+      current_selection <- setdiff(current_selection, c("cluster", "celltypes"))
+      if (entity_name %in% c("cluster", "celltypes")) {
+        current_selection <- c(current_selection, entity_name)
+      }
+    }
+    
+    updatePickerInput(session, "lm_predictors", choices = predictor_choices_with_entity, selected = current_selection)
+  }, ignoreNULL = FALSE, ignoreInit = TRUE)
+  
+  # Observer: Update Regression predictor choices based on entity
+  observeEvent(input$reg_entity, {
+    req(rv$meta_sample)
+    entity_type <- input$reg_entity %||% "Clusters"
+    entity_name <- if (entity_type == "Celltypes") "celltypes" else "cluster"
+    
+    meta_cols <- colnames(rv$meta_sample)
+    predictor_choices <- sort(setdiff(meta_cols, c("patient_ID", "source", "run_date")))
+    predictor_choices_with_entity <- c(predictor_choices, entity_name)
+    
+    # Get current selection and replace cluster/celltypes
+    current_selection <- input$reg_predictors
+    if (!is.null(current_selection)) {
+      current_selection <- setdiff(current_selection, c("cluster", "celltypes"))
+      if (entity_name %in% c("cluster", "celltypes")) {
+        current_selection <- c(current_selection, entity_name)
+      }
+    }
+    
+    updatePickerInput(session, "reg_predictors", choices = predictor_choices_with_entity, selected = current_selection)
+  }, ignoreNULL = FALSE, ignoreInit = TRUE)
+  
+  # Observer: Update Time to Event predictor choices based on entity
+  observeEvent(input$surv_entity, {
+    req(rv$meta_sample)
+    entity_type <- input$surv_entity %||% "Clusters"
+    entity_name <- if (entity_type == "Celltypes") "celltypes" else "cluster"
+    
+    meta_cols <- colnames(rv$meta_sample)
+    predictor_choices <- sort(setdiff(meta_cols, c("patient_ID", "source", "run_date")))
+    if (!(entity_name %in% predictor_choices)) {
+      predictor_choices <- c(predictor_choices, entity_name)
+    }
+    
+    # Get current selection and replace cluster/celltypes
+    current_selection <- input$surv_predictors
+    if (!is.null(current_selection)) {
+      current_selection <- setdiff(current_selection, c("cluster", "celltypes"))
+      if (entity_name %in% c("cluster", "celltypes")) {
+        current_selection <- c(current_selection, entity_name)
+      }
+    }
+    
+    updatePickerInput(session, "surv_predictors", choices = predictor_choices, selected = current_selection)
+  }, ignoreNULL = FALSE, ignoreInit = TRUE)
 
   # Render test type options for Categorical tab based on pairing feasibility
   output$cat_test_type_ui <- renderUI({
@@ -6000,22 +6365,40 @@ server <- function(input, output, session) {
   run_fs <- function() {
     req(rv$meta_sample, rv$abundance_sample, input$fs_outcome, input$fs_predictors)
 
-    # Metadata predictors (exclude placeholder)
-    pred_meta <- setdiff(intersect(input$fs_predictors, colnames(rv$meta_sample)), "cluster")
-
-    # Cluster predictors
-    all_clusters <- colnames(rv$abundance_sample)
-    if ("cluster" %in% input$fs_predictors) {
-      if (!is.null(input$fs_cluster_subset) && length(input$fs_cluster_subset) > 0) {
-        cluster_predictors <- intersect(input$fs_cluster_subset, all_clusters)
-      } else {
-        cluster_predictors <- all_clusters
-      }
-    } else {
-      cluster_predictors <- character(0)
+    # Get entity type and aggregate if needed
+    entity_type <- input$fs_entity %||% "Clusters"
+    abund0 <- rv$abundance_sample
+    
+    if (entity_type == "Celltypes" && !is.null(rv$cluster_map)) {
+      abund0 <- tryCatch({
+        aggregate_to_celltypes(abund0, rv$cluster_map, type = "abundance")
+      }, error = function(e) {
+        showNotification(paste("Error aggregating to celltypes:", e$message), type = "error")
+        return(NULL)
+      })
+      if (is.null(abund0)) return(NULL)
     }
 
-    predictors_final <- c(pred_meta, cluster_predictors)
+    # Metadata predictors (exclude placeholder)
+    pred_meta <- setdiff(intersect(input$fs_predictors, colnames(rv$meta_sample)), c("cluster", "celltypes"))
+
+    # Cluster/celltype predictors
+    all_entities <- colnames(abund0)
+    if ("cluster" %in% input$fs_predictors || "celltypes" %in% input$fs_predictors) {
+      # Filter by collections if specified
+      selected_coll_ids <- input$fs_collections
+      if (!is.null(selected_coll_ids) && length(selected_coll_ids) > 0) {
+        entity_predictors <- filter_entities_by_collections(all_entities, selected_coll_ids, entity_type)
+      } else if (!is.null(input$fs_cluster_subset) && length(input$fs_cluster_subset) > 0) {
+        entity_predictors <- intersect(input$fs_cluster_subset, all_entities)
+      } else {
+        entity_predictors <- all_entities
+      }
+    } else {
+      entity_predictors <- character(0)
+    }
+
+    predictors_final <- c(pred_meta, entity_predictors)
     if (length(predictors_final) == 0) {
       showNotification("Select at least one predictor.", type = "error")
       return(NULL)
@@ -6024,7 +6407,7 @@ server <- function(input, output, session) {
     # Subset before merge
     meta_sub <- rv$meta_sample %>%
       dplyr::select(patient_ID, !!input$fs_outcome, dplyr::all_of(pred_meta))
-    abund_sub <- rv$abundance_sample[, cluster_predictors, drop = FALSE]
+    abund_sub <- abund0[, entity_predictors, drop = FALSE]
 
     merged <- align_metadata_abundance(meta_sub, abund_sub, notify = showNotification)
 
@@ -6811,6 +7194,20 @@ server <- function(input, output, session) {
     req(rv$meta_sample, rv$abundance_sample, input$lm_outcome, input$lm_predictors)
 
     meta_patient <- rv$meta_sample
+    
+    # Get entity type and aggregate if needed
+    entity_type <- input$lm_entity %||% "Clusters"
+    abund0 <- rv$abundance_sample
+    
+    if (entity_type == "Celltypes" && !is.null(rv$cluster_map)) {
+      abund0 <- tryCatch({
+        aggregate_to_celltypes(abund0, rv$cluster_map, type = "abundance")
+      }, error = function(e) {
+        showNotification(paste("Error aggregating to celltypes:", e$message), type = "error")
+        return(NULL)
+      })
+      if (is.null(abund0)) return(NULL)
+    }
 
     # Outcome
     if (!(input$lm_outcome %in% colnames(meta_patient))) {
@@ -6832,19 +7229,23 @@ server <- function(input, output, session) {
     }
 
     # Predictors
-    pred_meta <- setdiff(intersect(input$lm_predictors, colnames(rv$meta_sample)), "cluster")
-    all_clusters <- colnames(rv$abundance_sample)
-    if ("cluster" %in% input$lm_predictors) {
-      if (!is.null(input$lm_cluster_subset) && length(input$lm_cluster_subset) > 0) {
-        cluster_predictors <- intersect(input$lm_cluster_subset, all_clusters)
+    pred_meta <- setdiff(intersect(input$lm_predictors, colnames(rv$meta_sample)), c("cluster", "celltypes"))
+    all_entities <- colnames(abund0)
+    if ("cluster" %in% input$lm_predictors || "celltypes" %in% input$lm_predictors) {
+      # Filter by collections if specified
+      selected_coll_ids <- input$lm_collections
+      if (!is.null(selected_coll_ids) && length(selected_coll_ids) > 0) {
+        entity_predictors <- filter_entities_by_collections(all_entities, selected_coll_ids, entity_type)
+      } else if (!is.null(input$lm_cluster_subset) && length(input$lm_cluster_subset) > 0) {
+        entity_predictors <- intersect(input$lm_cluster_subset, all_entities)
       } else {
-        cluster_predictors <- all_clusters
+        entity_predictors <- all_entities
       }
     } else {
-      cluster_predictors <- character(0)
+      entity_predictors <- character(0)
     }
 
-    predictors_final <- c(pred_meta, cluster_predictors)
+    predictors_final <- c(pred_meta, entity_predictors)
     if (length(predictors_final) == 0) {
       showNotification("Select at least one predictor.", type = "error")
       return(NULL)
@@ -6853,7 +7254,7 @@ server <- function(input, output, session) {
     # Subset before merge
     meta_sub <- meta_patient %>%
       dplyr::select(patient_ID, !!input$lm_outcome, dplyr::all_of(pred_meta))
-    abund_sub <- rv$abundance_sample[, cluster_predictors, drop = FALSE]
+    abund_sub <- abund0[, entity_predictors, drop = FALSE]
     merged <- align_metadata_abundance(meta_sub, abund_sub, notify = showNotification)
 
     # Filter missingness
@@ -7780,6 +8181,20 @@ server <- function(input, output, session) {
     req(rv$meta_sample, rv$abundance_sample, input$reg_outcome, input$reg_predictors)
 
     meta_patient <- rv$meta_sample
+    
+    # Get entity type and aggregate if needed
+    entity_type <- input$reg_entity %||% "Clusters"
+    abund0 <- rv$abundance_sample
+    
+    if (entity_type == "Celltypes" && !is.null(rv$cluster_map)) {
+      abund0 <- tryCatch({
+        aggregate_to_celltypes(abund0, rv$cluster_map, type = "abundance")
+      }, error = function(e) {
+        showNotification(paste("Error aggregating to celltypes:", e$message), type = "error")
+        return(NULL)
+      })
+      if (is.null(abund0)) return(NULL)
+    }
 
     # Outcome - must be numeric
     if (!(input$reg_outcome %in% colnames(meta_patient))) {
@@ -7795,19 +8210,23 @@ server <- function(input, output, session) {
     }
 
     # Predictors
-    pred_meta <- setdiff(intersect(input$reg_predictors, colnames(rv$meta_sample)), "cluster")
-    all_clusters <- colnames(rv$abundance_sample)
-    if ("cluster" %in% input$reg_predictors) {
-      if (!is.null(input$reg_cluster_subset) && length(input$reg_cluster_subset) > 0) {
-        cluster_predictors <- intersect(input$reg_cluster_subset, all_clusters)
+    pred_meta <- setdiff(intersect(input$reg_predictors, colnames(rv$meta_sample)), c("cluster", "celltypes"))
+    all_entities <- colnames(abund0)
+    if ("cluster" %in% input$reg_predictors || "celltypes" %in% input$reg_predictors) {
+      # Filter by collections if specified
+      selected_coll_ids <- input$reg_collections
+      if (!is.null(selected_coll_ids) && length(selected_coll_ids) > 0) {
+        entity_predictors <- filter_entities_by_collections(all_entities, selected_coll_ids, entity_type)
+      } else if (!is.null(input$reg_cluster_subset) && length(input$reg_cluster_subset) > 0) {
+        entity_predictors <- intersect(input$reg_cluster_subset, all_entities)
       } else {
-        cluster_predictors <- all_clusters
+        entity_predictors <- all_entities
       }
     } else {
-      cluster_predictors <- character(0)
+      entity_predictors <- character(0)
     }
 
-    predictors_final <- c(pred_meta, cluster_predictors)
+    predictors_final <- c(pred_meta, entity_predictors)
     if (length(predictors_final) == 0) {
       showNotification("Select at least one predictor.", type = "error")
       return(NULL)
@@ -7816,7 +8235,7 @@ server <- function(input, output, session) {
     # Subset before merge
     meta_sub <- meta_patient %>%
       dplyr::select(patient_ID, !!input$reg_outcome, dplyr::all_of(pred_meta))
-    abund_sub <- rv$abundance_sample[, cluster_predictors, drop = FALSE]
+    abund_sub <- abund0[, entity_predictors, drop = FALSE]
     merged <- align_metadata_abundance(meta_sub, abund_sub, notify = showNotification)
 
     # Filter missingness
@@ -8835,6 +9254,28 @@ server <- function(input, output, session) {
       showNotification("No counts data available. sccomp requires obj$cluster$counts.", type = "error")
       return()
     }
+    
+    # Get entity type and aggregate if needed
+    entity_type <- input$sccomp_entity %||% "Clusters"
+    counts0 <- rv$counts_sample
+    
+    if (entity_type == "Celltypes" && !is.null(rv$cluster_map)) {
+      counts0 <- tryCatch({
+        aggregate_to_celltypes(counts0, rv$cluster_map, type = "counts")
+      }, error = function(e) {
+        showNotification(paste("Error aggregating to celltypes:", e$message), type = "error")
+        return(NULL)
+      })
+      if (is.null(counts0)) return()
+    }
+    
+    # Filter by collections if specified
+    selected_coll_ids <- input$sccomp_collections
+    if (!is.null(selected_coll_ids) && length(selected_coll_ids) > 0) {
+      all_entities <- colnames(counts0)
+      filtered_entities <- filter_entities_by_collections(all_entities, selected_coll_ids, entity_type)
+      counts0 <- counts0[, filtered_entities, drop = FALSE]
+    }
 
     # Build formula based on mode
     formula_str <- if (input$sccomp_formula_mode == "simple") {
@@ -8876,10 +9317,10 @@ server <- function(input, output, session) {
 
         # Prepare data: convert counts matrix to long format with metadata
         message("\n=== Data Preparation ===")
-        message("Counts matrix dimensions: ", nrow(rv$counts_sample), " samples × ", ncol(rv$counts_sample), " clusters")
-        message("Counts matrix rownames (first 3): ", paste(head(rownames(rv$counts_sample), 3), collapse = ", "))
+        message("Counts matrix dimensions: ", nrow(counts0), " samples × ", ncol(counts0), " ", tolower(entity_type))
+        message("Counts matrix rownames (first 3): ", paste(head(rownames(counts0), 3), collapse = ", "))
 
-        counts_long <- as.data.frame(rv$counts_sample) %>%
+        counts_long <- as.data.frame(counts0) %>%
           tibble::rownames_to_column("sample") %>%
           tidyr::pivot_longer(cols = -sample, names_to = "cell_group", values_to = "count")
 
@@ -9612,19 +10053,8 @@ server <- function(input, output, session) {
       s <- sccomp_state()
       req(s)
 
-      # Export both estimate and test results if available
-      if (!is.null(s$test_result)) {
-        df <- as.data.frame(s$test_result) %>%
-          dplyr::filter(!is.na(c_effect))
-
-        # Select available columns
-        available_cols <- c("cell_group", "parameter", "c_effect", "c_lower", "c_upper", "c_p_value", "c_FDR")
-        available_cols <- available_cols[available_cols %in% colnames(df)]
-
-        df <- df %>%
-          dplyr::select(dplyr::all_of(available_cols)) %>%
-          dplyr::arrange(c_FDR)
-      } else if (!is.null(s$estimate_result)) {
+      # Export estimate results (initial sccomp run)
+      if (!is.null(s$estimate_result)) {
         df <- as.data.frame(s$estimate_result) %>%
           dplyr::filter(!is.na(c_effect))
 
@@ -9637,6 +10067,46 @@ server <- function(input, output, session) {
           dplyr::arrange(c_FDR)
       } else {
         df <- data.frame(Message = "No results available")
+      }
+
+      write.csv(df, file, row.names = FALSE)
+    },
+    contentType = "text/csv"
+  )
+
+  # Export sccomp contrast results
+  output$export_sccomp_contrast_results <- downloadHandler(
+    filename = function() {
+      subset_id <- rv$subset_id %||% "000000000"
+      s <- sccomp_state()
+      req(s, s$test_result)
+
+      # Build descriptive name from formula
+      formula_clean <- gsub("[~\\s\\+\\*\\(\\)]", "_", s$formula)
+      formula_clean <- gsub("_{2,}", "_", formula_clean)
+      formula_clean <- gsub("^_|_$", "", formula_clean)
+      formula_clean <- tolower(formula_clean)
+
+      paste0("sccomp_contrast_", formula_clean, "_", subset_id, ".csv")
+    },
+    content = function(file) {
+      s <- sccomp_state()
+      req(s, s$test_result)
+
+      # Export contrast test results
+      df <- as.data.frame(s$test_result) %>%
+        dplyr::filter(!is.na(c_effect))
+
+      # Select available columns
+      available_cols <- c("cell_group", "parameter", "c_effect", "c_lower", "c_upper", "c_p_value", "c_FDR")
+      available_cols <- available_cols[available_cols %in% colnames(df)]
+
+      if (length(available_cols) > 0) {
+        df <- df %>%
+          dplyr::select(dplyr::all_of(available_cols)) %>%
+          dplyr::arrange(c_FDR)
+      } else {
+        df <- data.frame(Message = "No contrast results available")
       }
 
       write.csv(df, file, row.names = FALSE)
@@ -9842,9 +10312,21 @@ server <- function(input, output, session) {
     req(rv$meta_sample, rv$abundance_sample, input$surv_outcome, input$surv_predictors)
 
     meta_patient <- rv$meta_sample
+    
+    # Get entity type and aggregate if needed
+    entity_type <- input$surv_entity %||% "Clusters"
+    abund_original <- rv$abundance_sample
+    
+    if (entity_type == "Celltypes" && !is.null(rv$cluster_map)) {
+      abund_original <- tryCatch({
+        aggregate_to_celltypes(abund_original, rv$cluster_map, type = "abundance")
+      }, error = function(e) {
+        stop(paste("Error aggregating to celltypes:", e$message))
+      })
+    }
 
     # Validate outcome variable
-    if (!(input$surv_outcome %in% colnames(meta_patient))) {
+    if (!(input$surv_outcome %in%colnames(meta_patient))) {
       stop(paste0("Outcome '", input$surv_outcome, "' not found in metadata."))
     }
 
@@ -9863,12 +10345,17 @@ server <- function(input, output, session) {
     design_df <- data.frame(patient_ID = meta_patient$patient_ID)
     name_mapping <- NULL
 
-    # Add cluster predictors if selected
-    if ("cluster" %in% predictor_list) {
-      abund <- rv$abundance_sample
+    # Add cluster/celltype predictors if selected
+    if ("cluster" %in% predictor_list || "celltypes" %in% predictor_list) {
+      abund <- abund_original
 
-      # Filter to selected clusters (if none selected, use all)
-      if (!is.null(input$surv_cluster_subset) && length(input$surv_cluster_subset) > 0) {
+      # Filter by collections if specified
+      selected_coll_ids <- input$surv_collections
+      if (!is.null(selected_coll_ids) && length(selected_coll_ids) > 0) {
+        all_entities <- colnames(abund)
+        filtered_entities <- filter_entities_by_collections(all_entities, selected_coll_ids, entity_type)
+        abund <- abund[, filtered_entities, drop = FALSE]
+      } else if (!is.null(input$surv_cluster_subset) && length(input$surv_cluster_subset) > 0) {
         selected_clusters <- input$surv_cluster_subset
         keep_cols <- colnames(abund)[colnames(abund) %in% selected_clusters]
         if (length(keep_cols) == 0) {
@@ -9876,7 +10363,7 @@ server <- function(input, output, session) {
         }
         abund <- abund[, keep_cols, drop = FALSE]
       }
-      # If no clusters selected, use all clusters (default behavior)
+      # If no collections/clusters selected, use all (default behavior)
 
       # Merge abundance with design
       abund_df <- as.data.frame(abund)
@@ -9917,7 +10404,7 @@ server <- function(input, output, session) {
     }
 
     # Add metadata predictors
-    meta_predictors <- setdiff(predictor_list, "cluster")
+    meta_predictors <- setdiff(predictor_list, c("cluster", "celltypes"))
     if (length(meta_predictors) > 0) {
       meta_subset <- meta_patient[, c("patient_ID", meta_predictors), drop = FALSE]
       
@@ -10215,6 +10702,18 @@ server <- function(input, output, session) {
     req(rv$meta_sample, rv$abundance_sample, input$surv_outcome, input$surv_predictors)
 
     meta_patient <- rv$meta_sample
+    
+    # Get entity type and aggregate if needed
+    entity_type <- input$surv_entity %||% "Clusters"
+    abund_original <- rv$abundance_sample
+    
+    if (entity_type == "Celltypes" && !is.null(rv$cluster_map)) {
+      abund_original <- tryCatch({
+        aggregate_to_celltypes(abund_original, rv$cluster_map, type = "abundance")
+      }, error = function(e) {
+        stop(paste("Error aggregating to celltypes:", e$message))
+      })
+    }
 
     # Validate outcome variable
     if (!(input$surv_outcome %in% colnames(meta_patient))) {
@@ -10236,12 +10735,17 @@ server <- function(input, output, session) {
     design_df <- data.frame(patient_ID = meta_patient$patient_ID)
     name_mapping <- NULL
 
-    # Add cluster predictors if selected
-    if ("cluster" %in% predictor_list) {
-      abund <- rv$abundance_sample
+    # Add cluster/celltype predictors if selected
+    if ("cluster" %in% predictor_list || "celltypes" %in% predictor_list) {
+      abund <- abund_original
 
-      # Filter to selected clusters (if none selected, use all)
-      if (!is.null(input$surv_cluster_subset) && length(input$surv_cluster_subset) > 0) {
+      # Filter by collections if specified
+      selected_coll_ids <- input$surv_collections
+      if (!is.null(selected_coll_ids) && length(selected_coll_ids) > 0) {
+        all_entities <- colnames(abund)
+        filtered_entities <- filter_entities_by_collections(all_entities, selected_coll_ids, entity_type)
+        abund <- abund[, filtered_entities, drop = FALSE]
+      } else if (!is.null(input$surv_cluster_subset) && length(input$surv_cluster_subset) > 0) {
         selected_clusters <- input$surv_cluster_subset
         keep_cols <- colnames(abund)[colnames(abund) %in% selected_clusters]
         if (length(keep_cols) == 0) {
@@ -10249,7 +10753,7 @@ server <- function(input, output, session) {
         }
         abund <- abund[, keep_cols, drop = FALSE]
       }
-      # If no clusters selected, use all clusters (default behavior)
+      # If no collections/clusters selected, use all (default behavior)
 
       abund_df <- as.data.frame(abund)
       abund_df$patient_ID <- rownames(abund_df)
@@ -10285,7 +10789,7 @@ server <- function(input, output, session) {
     }
 
     # Add metadata predictors
-    meta_predictors <- setdiff(predictor_list, "cluster")
+    meta_predictors <- setdiff(predictor_list, c("cluster", "celltypes"))
     if (length(meta_predictors) > 0) {
       meta_subset <- meta_patient[, c("patient_ID", meta_predictors), drop = FALSE]
       

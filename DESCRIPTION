@@ -1,6 +1,6 @@
 Package: FCView
 Type: Package
-Title: Interactive Shiny Application for Flow Cytometry Data Visualization
+Title: Interactive Shiny Application for Flow Cytometry Data Visualization and Analysis
 Version: 1.0.0
 Authors@R: person("Joshua", "D.", "Simmons", email = "joshua.d.simmons@vumc.org", role = c("aut", "cre"))
 Description: An interactive Shiny application for exploring and analyzing flow 

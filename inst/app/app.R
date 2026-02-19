@@ -275,29 +275,33 @@ EmbeddingUI <- function(id, title = "UMAP") {
   ns <- NS(id)
   tagList(
     h3(title),
-    fluidRow(
-      column(
-        3,
-        pickerInput(ns("color_by"), "Color by", choices = NULL),
-        checkboxInput(ns("show_labels"), "Show cluster labels", value = FALSE),
-        pickerInput(ns("split_by"), "Facet by",
-          choices = NULL,
-          options = list(`none-selected-text` = "None")
+    uiOutput(ns("embedding_status")),
+    conditionalPanel(
+      condition = sprintf("output['%s']", ns("has_coords")),
+      fluidRow(
+        column(
+          3,
+          pickerInput(ns("color_by"), "Color by", choices = NULL),
+          uiOutput(ns("label_type_ui")),
+          pickerInput(ns("split_by"), "Facet by",
+            choices = NULL,
+            options = list(`none-selected-text` = "None")
+          ),
+          uiOutput(ns("split_levels_ui")),
+          selectInput(
+            ns("max_facets"), "Facet columns",
+            choices = c(1, 2, 3, 4), selected = 2
+          ),
+          actionButton(ns("plot_facets"), "Plot facets"),
+          hr(),
+          # Moved export button here:
+          downloadButton(ns("export_embed_pdf"), "Export embedding as PDF"),
+          hr()
         ),
-        uiOutput(ns("split_levels_ui")),
-        selectInput(
-          ns("max_facets"), "Facet columns",
-          choices = c(1, 2, 3, 4), selected = 2
-        ),
-        actionButton(ns("plot_facets"), "Plot facets"),
-        hr(),
-        # Moved export button here:
-        downloadButton(ns("export_embed_pdf"), "Export embedding as PDF"),
-        hr()
-      ),
-      column(
-        9,
-        plotlyOutput(ns("embed_plot"), height = "650px")
+        column(
+          9,
+          plotlyOutput(ns("embed_plot"), height = "650px")
+        )
       )
     )
   )
@@ -313,18 +317,38 @@ EmbeddingServer <- function(id, embedding_name, coords, expr, meta_cell, cluster
       is.null(coords), is.null(expr), is.null(meta_cell)
     ))
 
+    # Flag for whether coordinates exist
+    output$has_coords <- reactive({
+      !is.null(coords())
+    })
+    outputOptions(output, "has_coords", suspendWhenHidden = FALSE)
+
+    # Status message when coordinates are missing
+    output$embedding_status <- renderUI({
+      if (is.null(coords())) {
+        tags$div(
+          style = "padding: 20px; margin: 20px; background-color: #f8d7da; border: 1px solid #f5c6cb; border-radius: 4px;",
+          tags$p(
+            style = "color: #721c24; font-size: 16px; margin: 0;",
+            paste0("No ", embedding_name, " graph found in object")
+          )
+        )
+      }
+    })
+
     # One-time picker initialization in a reactive context
     initialized <- FALSE
     plot_cache_gg <- reactiveVal(NULL)
     facet_cols_saved <- reactiveVal(2)
 
-    observeEvent(list(expr(), meta_cell(), clusters()), ignoreInit = FALSE, {
+    observeEvent(list(expr(), meta_cell(), clusters(), cluster_map()), ignoreInit = FALSE, {
       if (initialized) {
         return()
       }
       expr_val <- expr()
       meta_val <- meta_cell()
       clusters_val <- clusters()
+      cluster_map_val <- cluster_map()
 
       req(!is.null(expr_val), !is.null(meta_val))
 
@@ -344,8 +368,17 @@ EmbeddingServer <- function(id, embedding_name, coords, expr, meta_cell, cluster
       # Sort metadata portion alphabetically (excluding cluster)
       meta_cols_sorted <- sort(setdiff(meta_cols, "cluster"))
 
-      # Final order: markers → cluster → sorted metadata
-      ordered_choices <- c(numeric_markers, "cluster", meta_cols_sorted)
+      # Check if celltypes exist
+      has_celltypes <- !is.null(cluster_map_val) && 
+        "celltype" %in% names(cluster_map_val) &&
+        any(!is.na(cluster_map_val$celltype))
+
+      # Final order: markers → cluster → celltype (if exists) → sorted metadata
+      if (has_celltypes) {
+        ordered_choices <- c(numeric_markers, "cluster", "celltype", meta_cols_sorted)
+      } else {
+        ordered_choices <- c(numeric_markers, "cluster", meta_cols_sorted)
+      }
 
       # Continuous and categorical choices from metadata
       cont_choices <- sort(meta_cols[sapply(meta_val[meta_cols], is.numeric)])
@@ -383,6 +416,24 @@ EmbeddingServer <- function(id, embedding_name, coords, expr, meta_cell, cluster
       pickerInput(ns("split_levels"), "Facet categories to show",
         choices = NULL, multiple = TRUE
       )
+    })
+
+    output$label_type_ui <- renderUI({
+      cluster_map_val <- cluster_map()
+      
+      # Check if celltypes exist (at least one cluster assigned to a celltype)
+      has_celltypes <- !is.null(cluster_map_val) && 
+        "celltype" %in% names(cluster_map_val) &&
+        any(!is.na(cluster_map_val$celltype))
+      
+      label_choices <- c("None", "Clusters")
+      if (has_celltypes) {
+        label_choices <- c(label_choices, "Celltypes")
+      }
+      
+      selectInput(ns("label_type"), "Show labels", 
+                  choices = label_choices, 
+                  selected = "None")
     })
 
     ns <- session$ns
@@ -482,7 +533,9 @@ EmbeddingServer <- function(id, embedding_name, coords, expr, meta_cell, cluster
 
         numeric_markers <- colnames(expr_val)
         meta_cols <- colnames(meta_val)
-        valid_cols <- c(numeric_markers, meta_cols)
+        
+        # Include cluster and celltype in valid columns for color_by
+        valid_cols <- c(numeric_markers, "cluster", "celltype", meta_cols)
 
         color_by <- input$color_by
         if (is.null(color_by) || !(color_by %in% valid_cols)) {
@@ -504,6 +557,9 @@ EmbeddingServer <- function(id, embedding_name, coords, expr, meta_cell, cluster
         # --- Always add the colour column to dd ---
         if (color_by %in% numeric_markers) {
           dd$.color_val <- as.numeric(expr_val[dd$.cell, color_by])
+        } else if (color_by == "celltype") {
+          # celltype is already in dd from df() reactive
+          dd$.color_val <- dd$celltype
         } else if (color_by %in% meta_cols) {
           dd$.color_val <- meta_val[[color_by]][dd$.cell]
         } else {
@@ -559,21 +615,158 @@ EmbeddingServer <- function(id, embedding_name, coords, expr, meta_cell, cluster
               y = paste0(embedding_name, " 2"),
               color = color_by
             )
+          
+          # Add ggrepel labels when requested (for faceted plots)
+          label_type <- input$label_type %||% "None"
+          if (label_type != "None") {
+            coords_full <- as.data.frame(coords())
+            names(coords_full)[1:2] <- c("x", "y")
+            coords_full$cluster <- factor(clusters()$assignments)
+            coords_full[[split_var]] <- meta_val[[split_var]][seq_len(nrow(coords_full))]
+            
+            # Filter to match dd's filtered/downsampled data
+            shown_levels <- input$split_levels
+            if (!is.null(shown_levels) && length(shown_levels) > 0) {
+              coords_full <- coords_full[coords_full[[split_var]] %in% shown_levels, , drop = FALSE]
+            }
+            coords_full <- coords_full[!is.na(coords_full[[split_var]]), , drop = FALSE]
+            
+            cluster_map_val <- cluster_map()
+            
+            if (label_type == "Celltypes" && !is.null(cluster_map_val) && 
+                "celltype" %in% names(cluster_map_val)) {
+              # Add celltype column and calculate centroids per facet
+              coords_full$celltype <- as.character(cluster_map_val$celltype[
+                match(coords_full$cluster, cluster_map_val$cluster)
+              ])
+              
+              label_df <- coords_full %>%
+                group_by(.data[[split_var]], celltype) %>%
+                summarise(
+                  x = mean(x, na.rm = TRUE),
+                  y = mean(y, na.rm = TRUE),
+                  .groups = "drop"
+                )
+              
+              # Add ggrepel labels for celltypes
+              gg <- gg + 
+                ggrepel::geom_text_repel(
+                  data = label_df,
+                  mapping = aes(x = x, y = y, label = celltype),
+                  color = "white",
+                  size = 4,
+                  bg.color = "black",
+                  bg.r = 0.05,
+                  seed = 123,
+                  box.padding = 0.5,
+                  inherit.aes = FALSE
+                )
+            } else if (label_type == "Clusters") {
+              # Calculate cluster centroids per facet
+              label_df <- coords_full %>%
+                group_by(.data[[split_var]], cluster) %>%
+                summarise(
+                  x = mean(x, na.rm = TRUE),
+                  y = mean(y, na.rm = TRUE),
+                  .groups = "drop"
+                )
+              
+              # Add ggrepel labels for clusters
+              gg <- gg + 
+                ggrepel::geom_text_repel(
+                  data = label_df,
+                  mapping = aes(x = x, y = y, label = cluster),
+                  color = "white",
+                  size = 4,
+                  bg.color = "black",
+                  bg.r = 0.05,
+                  seed = 123,
+                  box.padding = 0.5,
+                  inherit.aes = FALSE
+                )
+            }
+          }
 
           plot_cache_gg(gg)
           p_base <- ggplotly(gg, tooltip = "text") %>% layout(dragmode = "pan")
         } else {
           # Single-panel ggplot for export
+          label_type <- input$label_type %||% "None"
+          
           gg <- ggplot(dd, aes(x = x, y = y, color = .data[[".color_val"]])) +
             geom_point(size = 0.25, alpha = 0.25) +
             (if (is.numeric(dd$.color_val)) scale_color_viridis_c() else scale_color_viridis_d()) +
             theme_minimal() +
             guides(color = guide_legend(override.aes = list(size = 4, alpha = 1))) +
+            theme(legend.position = if (label_type != "None") "none" else "right") +
             labs(
               x = paste0(embedding_name, " 1"),
               y = paste0(embedding_name, " 2"),
               color = color_by
             )
+          
+          # Add ggrepel labels when requested
+          if (label_type != "None") {
+            coords_full <- as.data.frame(coords())
+            names(coords_full)[1:2] <- c("x", "y")
+            coords_full$cluster <- factor(clusters()$assignments)
+            
+            cluster_map_val <- cluster_map()
+            
+            if (label_type == "Celltypes" && !is.null(cluster_map_val) && 
+                "celltype" %in% names(cluster_map_val)) {
+              # Add celltype column and calculate centroids
+              coords_full$celltype <- as.character(cluster_map_val$celltype[
+                match(coords_full$cluster, cluster_map_val$cluster)
+              ])
+              
+              label_df <- coords_full %>%
+                group_by(celltype) %>%
+                summarise(
+                  x = mean(x, na.rm = TRUE),
+                  y = mean(y, na.rm = TRUE),
+                  .groups = "drop"
+                )
+              
+              # Add ggrepel labels for celltypes
+              gg <- gg + 
+                ggrepel::geom_text_repel(
+                  data = label_df,
+                  mapping = aes(x = x, y = y, label = celltype),
+                  color = "white",
+                  size = 5,
+                  bg.color = "black",
+                  bg.r = 0.05,
+                  seed = 123,
+                  box.padding = 0.5,
+                  inherit.aes = FALSE
+                )
+            } else if (label_type == "Clusters") {
+              # Calculate cluster centroids
+              label_df <- coords_full %>%
+                group_by(cluster) %>%
+                summarise(
+                  x = mean(x, na.rm = TRUE),
+                  y = mean(y, na.rm = TRUE),
+                  .groups = "drop"
+                )
+              
+              # Add ggrepel labels for clusters
+              gg <- gg + 
+                ggrepel::geom_text_repel(
+                  data = label_df,
+                  mapping = aes(x = x, y = y, label = cluster),
+                  color = "white",
+                  size = 5,
+                  bg.color = "black",
+                  bg.r = 0.05,
+                  seed = 123,
+                  box.padding = 0.5,
+                  inherit.aes = FALSE
+                )
+            }
+          }
+          
           plot_cache_gg(gg)
 
           # Compute colours for plotly
@@ -613,42 +806,86 @@ EmbeddingServer <- function(id, embedding_name, coords, expr, meta_cell, cluster
     )
 
     # Update overlays without rebuilding points
-    observeEvent(input$show_labels, {
+    observeEvent(input$label_type, {
       p <- plot_cache_base()
       req(p)
 
-      # Add labels if toggled on
-      if (isTRUE(input$show_labels)) {
+      # Add labels based on label_type selection
+      label_type <- input$label_type %||% "None"
+      
+      if (label_type != "None") {
         coords_full <- as.data.frame(coords())
         names(coords_full)[1:2] <- c("x", "y")
         coords_full$cluster <- factor(clusters()$assignments)
-
-        label_df <- coords_full %>%
-          group_by(cluster) %>%
-          summarise(
-            x = mean(x, na.rm = TRUE),
-            y = mean(y, na.rm = TRUE),
-            .groups = "drop"
-          )
-
-        annots <- lapply(seq_len(nrow(label_df)), function(i) {
-          list(
-            x = label_df$x[i],
-            y = label_df$y[i],
-            xref = "x",
-            yref = "y",
-            text = as.character(label_df$cluster[i]),
-            showarrow = FALSE,
-            xanchor = "center",
-            yanchor = "middle",
-            align = "center",
-            font = list(color = "black", size = 18),
-            bgcolor = "rgba(255,255,255,0.85)",
-            bordercolor = "rgba(0,0,0,0)",
-            borderpad = 2,
-            opacity = 1
-          )
-        })
+        
+        # Get cluster_map for celltype labels
+        cluster_map_val <- cluster_map()
+        
+        if (label_type == "Celltypes" && !is.null(cluster_map_val) && 
+            "celltype" %in% names(cluster_map_val)) {
+          # Add celltype column
+          coords_full$celltype <- as.character(cluster_map_val$celltype[
+            match(coords_full$cluster, cluster_map_val$cluster)
+          ])
+          
+          # Group by celltype and calculate centroids
+          label_df <- coords_full %>%
+            group_by(celltype) %>%
+            summarise(
+              x = mean(x, na.rm = TRUE),
+              y = mean(y, na.rm = TRUE),
+              .groups = "drop"
+            )
+          
+          # Create annotations for celltypes
+          annots <- lapply(seq_len(nrow(label_df)), function(i) {
+            list(
+              x = label_df$x[i],
+              y = label_df$y[i],
+              xref = "x",
+              yref = "y",
+              text = as.character(label_df$celltype[i]),
+              showarrow = FALSE,
+              xanchor = "center",
+              yanchor = "middle",
+              align = "center",
+              font = list(color = "black", size = 18),
+              bgcolor = "rgba(255,255,255,0.85)",
+              bordercolor = "rgba(0,0,0,0)",
+              borderpad = 2,
+              opacity = 1
+            )
+          })
+        } else {
+          # Group by cluster and calculate centroids
+          label_df <- coords_full %>%
+            group_by(cluster) %>%
+            summarise(
+              x = mean(x, na.rm = TRUE),
+              y = mean(y, na.rm = TRUE),
+              .groups = "drop"
+            )
+          
+          # Create annotations for clusters
+          annots <- lapply(seq_len(nrow(label_df)), function(i) {
+            list(
+              x = label_df$x[i],
+              y = label_df$y[i],
+              xref = "x",
+              yref = "y",
+              text = as.character(label_df$cluster[i]),
+              showarrow = FALSE,
+              xanchor = "center",
+              yanchor = "middle",
+              align = "center",
+              font = list(color = "black", size = 18),
+              bgcolor = "rgba(255,255,255,0.85)",
+              bordercolor = "rgba(0,0,0,0)",
+              borderpad = 2,
+              opacity = 1
+            )
+          })
+        }
 
         p <- p %>% layout(annotations = annots)
       }
@@ -1299,14 +1536,17 @@ ui <- navbarPage(
         ),
         conditionalPanel(
           condition = "input.sccomp_formula_mode == 'simple'",
-          pickerInput("sccomp_group_var", "Grouping variable", choices = NULL),
-          conditionalPanel(
-            condition = "input.sccomp_group_var != '' && input.sccomp_group_var != null",
-            pickerInput("sccomp_reference_level", "Reference level (first level is default)",
-              choices = NULL, options = list(`live-search` = TRUE)
-            )
-          ),
+          pickerInput("sccomp_group_var", "Variable of interest", choices = NULL),
+          uiOutput("sccomp_reference_level_ui"),
           pickerInput("sccomp_formula_vars", "Additional covariates (optional)", choices = NULL, multiple = TRUE),
+          conditionalPanel(
+            condition = "input.sccomp_formula_vars !== null && input.sccomp_formula_vars.length > 0",
+            textInput("sccomp_simple_ref_levels", "Additional covariate reference levels (optional)",
+              value = "",
+              placeholder = "variable1=level1; variable2=level2"
+            ),
+            helpText("For categorical covariates only. Syntax: variable=level; separated by semicolons.")
+          ),
           checkboxInput("sccomp_interactions", "Use interactions instead of additive effects in model formula.", FALSE)
         ),
         conditionalPanel(
@@ -1334,6 +1574,11 @@ ui <- navbarPage(
           min = 1, max = parallel::detectCores(),
           value = max(1, parallel::detectCores() - 2), step = 1
         ),
+        sliderInput("sccomp_logit_fold_change",
+          label = "Minimum logit fold-change threshold",
+          min = 0.1, max = 1, value = 0.1, step = 0.05
+        ),
+        helpText("Sets the minimum compositional change (on the logit scale) a cell group must show before it can be considered significant. Higher values require larger shifts, reducing sensitivity but improving specificity."),
         actionButton("run_sccomp", "Run sccomp", class = "btn-primary"),
         br(), br(),
         conditionalPanel(
@@ -1413,6 +1658,55 @@ ui <- navbarPage(
         pickerInput("surv_entity", "Entity", choices = c("Clusters", "Celltypes"), selected = "Clusters"),
         uiOutput("surv_collections_ui"),
         pickerInput("surv_outcome", "Time-to-event variable (continuous)", choices = NULL),
+        checkboxInput("surv_update_event_status", "Update event status", value = FALSE),
+        helpText(
+          "By default, all samples are assumed to have reached the event (fully observed).",
+          "Check this box to specify which samples were censored —",
+          "i.e., the event did not occur within the follow-up period."
+        ),
+        conditionalPanel(
+          condition = "input.surv_update_event_status",
+          radioButtons("surv_event_source", "Specify event status via:",
+            choices = c(
+              "Metadata column"        = "metadata",
+              "Manual sample selection" = "manual"
+            ),
+            selected = "metadata"
+          ),
+          # ── Metadata column path ──────────────────────────────────────────────
+          conditionalPanel(
+            condition = "input.surv_update_event_status && input.surv_event_source == 'metadata'",
+            selectInput("surv_event_col", "Metadata column encoding event status:", choices = NULL),
+            uiOutput("surv_event_levels_ui"),
+            helpText(
+              tags$b("Numeric (0/1) or logical columns:"),
+              "used directly — 1 or TRUE = event occurred, 0 or FALSE = censored.",
+              tags$br(),
+              tags$b("Text / factor columns:"),
+              "select below which value(s) mean the event occurred; all others are treated as censored."
+            )
+          ),
+          # ── Manual selection path ─────────────────────────────────────────────
+          conditionalPanel(
+            condition = "input.surv_update_event_status && input.surv_event_source == 'manual'",
+            pickerInput("surv_manual_ids", "Select sample IDs:",
+              choices = NULL, multiple = TRUE,
+              options = list(
+                `actions-box`        = TRUE,
+                `live-search`        = TRUE,
+                `none-selected-text` = "No samples selected"
+              )
+            ),
+            radioButtons("surv_manual_mark", "Interpret selected samples as:",
+              choices = c(
+                "Censored \u2014 event did NOT occur" = "selected_censored",
+                "Events \u2014 event DID occur"       = "selected_events"
+              ),
+              selected = "selected_censored"
+            ),
+            helpText("Samples not in the selection are treated as the opposite category.")
+          )
+        ),
         hr(),
         selectInput("surv_analysis_mode", "Mode:",
           choices = c("Multivariate" = "multivariate", "Univariate" = "univariate"),
@@ -2531,7 +2825,7 @@ server <- function(input, output, session) {
                     `none-selected-text` = "No values selected",
                     `live-search` = TRUE
                   )
-                ),
+                )
                 # (No exclude checkbox for categorical columns)
               )
             })
@@ -4338,13 +4632,13 @@ server <- function(input, output, session) {
   )
 
   # Launch embedding modules as soon as data is ready
-  observeEvent(list(rv$UMAP, rv$data_ready),
+  observeEvent(rv$data_ready,
     {
-      req(rv$data_ready, rv$UMAP, rv$expr, rv$meta_cell, rv$clusters)
+      req(rv$data_ready, rv$expr, rv$meta_cell, rv$clusters)
       message("Launching UMAP module")
       EmbeddingServer(
         "umap", "UMAP",
-        reactive(rv$UMAP$coords),
+        reactive(if (!is.null(rv$UMAP)) rv$UMAP$coords else NULL),
         reactive(rv$expr),
         reactive(rv$meta_cell),
         reactive(rv$clusters),
@@ -4352,16 +4646,16 @@ server <- function(input, output, session) {
         reactive(input$main_tab)
       )
     },
-    ignoreInit = TRUE
+    ignoreInit = TRUE, once = TRUE
   )
 
-  observeEvent(list(rv$tSNE, rv$data_ready),
+  observeEvent(rv$data_ready,
     {
-      req(rv$data_ready, rv$tSNE, rv$expr, rv$meta_cell, rv$clusters)
+      req(rv$data_ready, rv$expr, rv$meta_cell, rv$clusters)
       message("Launching tSNE module")
       EmbeddingServer(
         "tsne", "tSNE",
-        reactive(rv$tSNE$coords),
+        reactive(if (!is.null(rv$tSNE)) rv$tSNE$coords else NULL),
         reactive(rv$expr),
         reactive(rv$meta_cell),
         reactive(rv$clusters),
@@ -4369,7 +4663,7 @@ server <- function(input, output, session) {
         reactive(input$main_tab)
       )
     },
-    ignoreInit = TRUE
+    ignoreInit = TRUE, once = TRUE
   )
 
   # Home summaries
@@ -7397,6 +7691,9 @@ server <- function(input, output, session) {
       return(list(
         model = model, preds = preds_tbl, null_acc = null_acc,
         split_info = split_info,
+        run_model_type = input$lm_model_type,
+        run_validation = validation,
+        run_outcome    = input$lm_outcome,
         details = list(
           samples_before = n_before,
           samples_after = n_after,
@@ -7473,6 +7770,9 @@ server <- function(input, output, session) {
 
     return(list(
       model = model, preds = preds, null_acc = null_acc,
+      run_model_type = input$lm_model_type,
+      run_validation = validation,
+      run_outcome    = input$lm_outcome,
       details = list(
         samples_before = n_before,
         samples_after = n_after,
@@ -8066,9 +8366,10 @@ server <- function(input, output, session) {
   output$export_lm_zip <- downloadHandler(
     filename = function() {
       subset_id <- rv$subset_id %||% "000000000"
-      model <- gsub("\\s+", "_", tolower(input$lm_model_type %||% "model"))
-      validation <- gsub("\\s+", "_", tolower(input$lm_validation %||% "validation"))
-      outcome <- gsub("\\s+", "_", tolower(input$lm_outcome %||% "outcome"))
+      s <- lm_state()
+      model <- gsub("[^a-z0-9]+", "_", tolower((s$run_model_type %||% input$lm_model_type) %||% "model"))
+      validation <- gsub("[^a-z0-9]+", "_", tolower((s$run_validation %||% input$lm_validation) %||% "validation"))
+      outcome <- gsub("[^a-z0-9]+", "_", tolower((s$run_outcome %||% input$lm_outcome) %||% "outcome"))
       paste0(model, "_", validation, "_", outcome, "_", subset_id, ".zip")
     },
     content = function(file) {
@@ -8076,10 +8377,10 @@ server <- function(input, output, session) {
       s <- lm_state()
       req(s, s$model)
 
-      # Build filename prefix from zip name components
-      model <- gsub("\\s+", "_", tolower(input$lm_model_type %||% "model"))
-      validation <- gsub("\\s+", "_", tolower(input$lm_validation %||% "validation"))
-      outcome <- gsub("\\s+", "_", tolower(input$lm_outcome %||% "outcome"))
+      # Build filename prefix from zip name components (use run-time values, not live inputs)
+      model <- gsub("[^a-z0-9]+", "_", tolower((s$run_model_type %||% input$lm_model_type) %||% "model"))
+      validation <- gsub("[^a-z0-9]+", "_", tolower((s$run_validation %||% input$lm_validation) %||% "validation"))
+      outcome <- gsub("[^a-z0-9]+", "_", tolower((s$run_outcome %||% input$lm_outcome) %||% "outcome"))
       prefix <- paste0(model, "_", validation, "_", outcome)
 
       tmpdir <- tempdir()
@@ -8432,6 +8733,9 @@ server <- function(input, output, session) {
       return(list(
         model = model, preds = preds_tbl, null_rmse = null_rmse,
         split_info = split_info,
+        run_model_type = input$reg_model_type,
+        run_validation = validation,
+        run_outcome    = input$reg_outcome,
         details = list(
           samples_before = n_before,
           samples_after = n_after,
@@ -8567,6 +8871,9 @@ server <- function(input, output, session) {
 
     return(list(
       model = model, preds = preds_tbl, null_rmse = null_rmse,
+      run_model_type = input$reg_model_type,
+      run_validation = validation,
+      run_outcome    = input$reg_outcome,
       details = list(
         samples_before = n_before,
         samples_after = n_after,
@@ -8956,9 +9263,10 @@ server <- function(input, output, session) {
   output$export_reg_zip <- downloadHandler(
     filename = function() {
       subset_id <- rv$subset_id %||% "000000000"
-      model <- gsub("\\s+", "_", tolower(input$reg_model_type %||% "model"))
-      validation <- gsub("\\s+", "_", tolower(input$reg_validation %||% "validation"))
-      outcome <- gsub("\\s+", "_", tolower(input$reg_outcome %||% "outcome"))
+      s <- reg_state()
+      model <- gsub("[^a-z0-9]+", "_", tolower((s$run_model_type %||% input$reg_model_type) %||% "model"))
+      validation <- gsub("[^a-z0-9]+", "_", tolower((s$run_validation %||% input$reg_validation) %||% "validation"))
+      outcome <- gsub("[^a-z0-9]+", "_", tolower((s$run_outcome %||% input$reg_outcome) %||% "outcome"))
       paste0(model, "_", validation, "_", outcome, "_", subset_id, ".zip")
     },
     content = function(file) {
@@ -8966,10 +9274,10 @@ server <- function(input, output, session) {
       s <- reg_state()
       req(s, s$model)
 
-      # Build filename prefix from zip name components
-      model <- gsub("\\s+", "_", tolower(input$reg_model_type %||% "model"))
-      validation <- gsub("\\s+", "_", tolower(input$reg_validation %||% "validation"))
-      outcome <- gsub("\\s+", "_", tolower(input$reg_outcome %||% "outcome"))
+      # Build filename prefix from zip name components (use run-time values, not live inputs)
+      model <- gsub("[^a-z0-9]+", "_", tolower((s$run_model_type %||% input$reg_model_type) %||% "model"))
+      validation <- gsub("[^a-z0-9]+", "_", tolower((s$run_validation %||% input$reg_validation) %||% "validation"))
+      outcome <- gsub("[^a-z0-9]+", "_", tolower((s$run_outcome %||% input$reg_outcome) %||% "outcome"))
       prefix <- paste0(model, "_", validation, "_", outcome)
 
       tmpdir <- tempdir()
@@ -9107,6 +9415,17 @@ server <- function(input, output, session) {
       param <- x2$parameter[1]
       # Remove backticks from parameter names (common in contrasts)
       param_clean <- gsub("`", "", param)
+      # Strip the factor (variable name) prefix for additional covariates.
+      # The top-level gsub only removes the primary variable's name; each
+      # covariate's name must be stripped here using the per-group factor value.
+      factor_name <- if ("factor" %in% colnames(x2) && length(x2$factor) > 0 &&
+                          !is.na(x2$factor[1])) as.character(x2$factor[1]) else NA_character_
+      if (!is.na(factor_name) && nzchar(factor_name)) {
+        stripped <- sub(paste0("^", factor_name), "", param_clean)
+        # Only apply strip if something remains — continuous variables have no
+        # level suffix so stripping would produce an empty string; keep original.
+        if (nzchar(stripped)) param_clean <- stripped
+      }
       if (F) { # will come back to this later
         # For contrasts like "VariableLevel1 - VariableLevel2", remove prefix from both sides
         if (grepl(" - ", param_clean)) {
@@ -9220,9 +9539,14 @@ server <- function(input, output, session) {
     categorical_choices <- setdiff(categorical_choices, c("patient_ID", "run_date", "source"))
     categorical_choices <- filter_by_global_settings(categorical_choices)
 
-    # For simple mode
-    updatePickerInput(session, "sccomp_group_var", choices = c("", categorical_choices))
-    updatePickerInput(session, "sccomp_formula_vars", choices = c("", categorical_choices))
+    continuous_choices <- sort(meta_cols[sapply(rv$meta_sample, function(x) is.numeric(x) || is.integer(x))])
+    continuous_choices <- setdiff(continuous_choices, c("patient_ID", "run_date", "source"))
+    continuous_choices <- filter_by_global_settings(continuous_choices)
+    all_simple_choices <- sort(c(categorical_choices, continuous_choices))
+
+    # For simple mode — include both categorical and continuous
+    updatePickerInput(session, "sccomp_group_var", choices = c("", all_simple_choices))
+    updatePickerInput(session, "sccomp_formula_vars", choices = c("", all_simple_choices))
 
     # For custom mode - show all variables including continuous
     all_vars <- sort(colnames(rv$meta_sample))
@@ -9231,25 +9555,49 @@ server <- function(input, output, session) {
     updatePickerInput(session, "sccomp_available_vars", choices = all_vars)
   })
 
-  # Update reference level choices when grouping variable changes
+  # When the variable of interest changes, exclude it from the additional covariates picker
   observeEvent(input$sccomp_group_var, {
-    req(rv$meta_sample, input$sccomp_group_var)
+    req(rv$meta_sample)
+    meta_cols <- colnames(rv$meta_sample)
 
-    if (input$sccomp_group_var == "") {
-      return()
+    cat_ch <- sort(meta_cols[sapply(rv$meta_sample, function(x) is.character(x) || is.factor(x))])
+    cat_ch <- setdiff(cat_ch, c("patient_ID", "run_date", "source"))
+    cat_ch <- filter_by_global_settings(cat_ch)
+
+    con_ch <- sort(meta_cols[sapply(rv$meta_sample, function(x) is.numeric(x) || is.integer(x))])
+    con_ch <- setdiff(con_ch, c("patient_ID", "run_date", "source"))
+    con_ch <- filter_by_global_settings(con_ch)
+
+    all_choices <- sort(c(cat_ch, con_ch))
+    group_var   <- input$sccomp_group_var %||% ""
+    available   <- setdiff(all_choices, group_var)
+    # Drop group_var from current selection if the user had it chosen
+    current_sel <- setdiff(input$sccomp_formula_vars %||% character(0), group_var)
+
+    updatePickerInput(session, "sccomp_formula_vars",
+      choices  = c("", available),
+      selected = current_sel
+    )
+  }, ignoreNULL = FALSE)
+
+  # Render reference level UI for the primary group variable (only for categorical vars)
+  output$sccomp_reference_level_ui <- renderUI({
+    req(input$sccomp_group_var, nzchar(input$sccomp_group_var), rv$meta_sample)
+    col <- rv$meta_sample[[input$sccomp_group_var]]
+    if (is.null(col)) return(NULL)
+    if (is.numeric(col) || is.integer(col)) {
+      # Continuous — no reference level needed
+      return(helpText(tags$em(
+        style = "color: #666;",
+        paste0("'", input$sccomp_group_var, "' is continuous — no reference level needed.")
+      )))
     }
-
-    # Get unique levels from the selected grouping variable
-    if (input$sccomp_group_var %in% colnames(rv$meta_sample)) {
-      unique_levels <- sort(unique(as.character(rv$meta_sample[[input$sccomp_group_var]])))
-      unique_levels <- unique_levels[!is.na(unique_levels)]
-
-      # Update picker with first level as default
-      updatePickerInput(session, "sccomp_reference_level",
-        choices = unique_levels,
-        selected = unique_levels[1]
-      )
-    }
+    unique_levels <- sort(unique(as.character(col)))
+    unique_levels <- unique_levels[!is.na(unique_levels)]
+    pickerInput("sccomp_reference_level", "Reference level (first level is default)",
+      choices = unique_levels, selected = unique_levels[1],
+      options = list(`live-search` = TRUE)
+    )
   })
 
   # Reactive to store sccomp results
@@ -9436,26 +9784,43 @@ server <- function(input, output, session) {
         }
 
         # Relevel variables based on mode
-        if (input$sccomp_formula_mode == "simple" && !is.null(input$sccomp_group_var) &&
-          input$sccomp_group_var != "" && !is.null(input$sccomp_reference_level)) {
-          # Simple mode: relevel the grouping variable
-          group_var <- input$sccomp_group_var
+        if (input$sccomp_formula_mode == "simple") {
+          # Simple mode: relevel primary grouping variable (categorical only)
+          group_var <- input$sccomp_group_var %||% ""
           ref_level <- input$sccomp_reference_level
-
-          # Clean the reference level to match the cleaned data
-          ref_level_cleaned <- gsub("\\+", "p", ref_level)
-          ref_level_cleaned <- gsub("\\-", "n", ref_level_cleaned)
-
-          if (group_var %in% colnames(sccomp_data)) {
+          if (nzchar(group_var) && !is.null(ref_level) && nzchar(ref_level) &&
+              group_var %in% colnames(sccomp_data) &&
+              (is.character(sccomp_data[[group_var]]) || is.factor(sccomp_data[[group_var]]))) {
+            ref_level_cleaned <- gsub("\\-", "n", gsub("\\+", "p", ref_level))
             message("\n=== Releveling Grouping Variable ===")
-            message("Variable: ", group_var)
-            message("Reference level (original): ", ref_level)
-            message("Reference level (cleaned): ", ref_level_cleaned)
-
-            sccomp_data[[group_var]] <- factor(sccomp_data[[group_var]])
-            sccomp_data[[group_var]] <- relevel(sccomp_data[[group_var]], ref = ref_level_cleaned)
-
+            message("Variable: ", group_var, " | Ref: ", ref_level_cleaned)
+            sccomp_data[[group_var]] <- relevel(factor(sccomp_data[[group_var]]), ref = ref_level_cleaned)
             message("Factor levels after releveling: ", paste(levels(sccomp_data[[group_var]]), collapse = ", "))
+          }
+
+          # Simple mode: also apply reference levels for additional covariates
+          simple_extra_refs <- input$sccomp_simple_ref_levels %||% ""
+          if (nzchar(trimws(simple_extra_refs))) {
+            message("\n=== Releveling Additional Covariates (Simple Mode) ===")
+            ref_specs <- trimws(strsplit(simple_extra_refs, ";")[[1]])
+            for (spec in ref_specs) {
+              if (grepl("=", spec)) {
+                parts <- strsplit(spec, "=")[[1]]
+                if (length(parts) == 2) {
+                  var_name  <- trimws(parts[1])
+                  ref_level2 <- trimws(parts[2])
+                  ref_level2_cleaned <- gsub("\\-", "n", gsub("\\+", "p", ref_level2))
+                  if (var_name %in% colnames(sccomp_data) &&
+                      (is.character(sccomp_data[[var_name]]) || is.factor(sccomp_data[[var_name]]))) {
+                    message("Variable: ", var_name, " | Ref: ", ref_level2_cleaned)
+                    sccomp_data[[var_name]] <- relevel(factor(sccomp_data[[var_name]]), ref = ref_level2_cleaned)
+                    message("Factor levels: ", paste(levels(sccomp_data[[var_name]]), collapse = ", "))
+                  } else {
+                    message("Skipping '" , var_name, "' — not found or not categorical")
+                  }
+                }
+              }
+            }
           }
         } else if (input$sccomp_formula_mode == "custom" &&
           !is.null(input$sccomp_custom_reference_levels) &&
@@ -9556,7 +9921,10 @@ server <- function(input, output, session) {
 
           # Automatically run sccomp_test to get FDR values (required for significance testing)
           message("\n=== Running sccomp_test (automatic) ===")
-          tmp_result <- sccomp::sccomp_test(tmp_result)
+          tmp_result <- sccomp::sccomp_test(
+            tmp_result,
+            test_composition_above_logit_fold_change = input$sccomp_logit_fold_change
+          )
           message("sccomp_test completed successfully")
         }, error = function(e) {
           stop(e)
@@ -9613,7 +9981,8 @@ server <- function(input, output, session) {
         # Run sccomp_test with contrast
         test_result <- sccomp::sccomp_test(
           s$estimate_result,
-          contrasts = contrast_str
+          contrasts = contrast_str,
+          test_composition_above_logit_fold_change = input$sccomp_logit_fold_change
         )
 
         # Update state with test results
@@ -10297,11 +10666,158 @@ server <- function(input, output, session) {
         choices = colnames(rv$abundance_sample),
         selected = character(0)  # No selection = use all clusters
       )
+      # Event status controls — restrict to binary (≤2 unique non-NA values) columns only.
+      # Purely continuous double columns are excluded unless they are strict 0/1 flags.
+      viable_event_cols <- setdiff(meta_cols, c("patient_ID", "source", "run_date", "cluster"))
+      viable_event_cols <- viable_event_cols[vapply(viable_event_cols, function(cn) {
+        col   <- rv$meta_sample[[cn]]
+        non_na <- na.omit(col)
+        if (length(non_na) == 0) return(FALSE)           # all NA
+        n_uniq <- length(unique(non_na))
+        if (n_uniq > 2) return(FALSE)                    # more than 2 unique values
+        if (is.double(col) && !all(non_na %in% c(0, 1))) return(FALSE)  # continuous float
+        TRUE
+      }, logical(1))]
+      updateSelectInput(session, "surv_event_col",
+        choices = c("", sort(viable_event_cols)), selected = ""
+      )
+      updatePickerInput(session, "surv_manual_ids",
+        choices  = sort(unique(as.character(rv$meta_sample$patient_ID))),
+        selected = character(0)
+      )
     },
     ignoreInit = TRUE
   )
 
-  # No threshold slider needed - split method is selected via dropdown
+  # ── Event status helpers ────────────────────────────────────────────────────
+
+  # Build event status integer vector (1 = event occurred, 0 = censored).
+  # patient_ids: the patient_ID column from design_df (may be reordered after merges).
+  # Uses match() against meta_patient to ensure correct alignment.
+  build_event_status_vec <- function(patient_ids, meta_patient,
+                                     update_status, event_source,
+                                     event_col, event_level,
+                                     manual_ids, manual_mark) {
+    n <- length(patient_ids)
+    if (!isTRUE(update_status)) return(rep(1L, n))
+
+    base_status <- rep(1L, n)
+
+    if (identical(event_source, "metadata") &&
+        !is.null(event_col) && nchar(event_col) > 0 &&
+        event_col %in% colnames(meta_patient)) {
+
+      # Align by patient_ID in case design_df row order differs from meta_patient
+      col_vals <- meta_patient[[event_col]][match(as.character(patient_ids),
+                                                  as.character(meta_patient$patient_ID))]
+      if (is.logical(col_vals)) {
+        base_status <- as.integer(col_vals)
+      } else if (is.numeric(col_vals) && all(na.omit(col_vals) %in% c(0, 1))) {
+        base_status <- as.integer(col_vals)
+      } else if (!is.null(event_level) && length(event_level) > 0) {
+        base_status <- as.integer(as.character(col_vals) %in% as.character(event_level))
+      }
+      base_status[is.na(base_status)] <- 0L  # NA status treated as censored
+
+    } else if (identical(event_source, "manual") &&
+               !is.null(manual_ids) && length(manual_ids) > 0) {
+
+      id_strs <- as.character(patient_ids)
+      sel_ids <- as.character(manual_ids)
+      if (identical(manual_mark, "selected_censored")) {
+        base_status <- as.integer(!(id_strs %in% sel_ids))
+      } else {
+        base_status <- as.integer(id_strs %in% sel_ids)
+      }
+    }
+
+    base_status
+  }
+
+  # Handle NA times before complete.cases():
+  #   NA time + event (status=1) → drop row, notify user (duration 10 s)
+  #   NA time + censored (status=0) → impute max non-NA time, notify user (duration 10 s)
+  apply_time_na_rules <- function(design_df) {
+    na_rows <- which(is.na(design_df$time))
+    if (length(na_rows) == 0) return(design_df)
+
+    max_time <- max(design_df$time, na.rm = TRUE)
+
+    # Drop: NA time + event occurred
+    drop_rows <- na_rows[design_df$status[na_rows] == 1L]
+    if (length(drop_rows) > 0) {
+      drop_ids <- as.character(design_df$patient_ID[drop_rows])
+      showNotification(
+        paste0(
+          length(drop_rows), " sample(s) dropped: missing time-to-event value but marked as event ",
+          "occurred. IDs: ", paste(drop_ids, collapse = ", ")
+        ),
+        type = "warning", duration = 10
+      )
+      design_df <- design_df[-drop_rows, , drop = FALSE]
+      na_rows   <- which(is.na(design_df$time))  # recalculate after drop
+    }
+
+    # Impute: NA time + censored
+    impute_rows <- which(is.na(design_df$time) & design_df$status == 0L)
+    if (length(impute_rows) > 0) {
+      impute_ids <- as.character(design_df$patient_ID[impute_rows])
+      design_df$time[impute_rows] <- max_time
+      showNotification(
+        paste0(
+          length(impute_rows), " censored sample(s) had missing time-to-event — imputed with ",
+          "max observed time (", max_time, "). IDs: ", paste(impute_ids, collapse = ", ")
+        ),
+        type = "warning", duration = 10
+      )
+    }
+
+    design_df
+  }
+
+  # Dynamic UI: level picker shown when the selected event-status column is text/factor
+  output$surv_event_levels_ui <- renderUI({
+    req(input$surv_event_col, nzchar(input$surv_event_col), rv$meta_sample)
+    col <- rv$meta_sample[[input$surv_event_col]]
+    if (is.null(col)) return(NULL)
+
+    non_na  <- na.omit(col)
+    has_na  <- anyNA(col)
+    na_note <- if (has_na) {
+      tags$p(
+        style = "color:#92400e;background:#fef3c7;border-radius:4px;padding:6px 8px;font-size:12px;margin-top:4px;",
+        icon("triangle-exclamation"),
+        paste0(sum(is.na(col)), " sample(s) have NA in this column — ",
+               "NA is interpreted as censored (event did not occur). ",
+               "A warning will be shown when the model is run.")
+      )
+    } else NULL
+
+    if (is.logical(col) || (is.numeric(col) && all(non_na %in% c(0, 1)))) {
+      # Unambiguous encoding: 1/TRUE = event occurred, 0/FALSE = censored
+      tagList(
+        tags$p(
+          style = "color:#555;font-style:italic;font-size:12px;margin-bottom:4px;",
+          "0 / FALSE = censored; 1 / TRUE = event occurred."
+        ),
+        na_note
+      )
+    } else {
+      # Character or factor binary column: user selects which value = event
+      lvls <- sort(unique(as.character(non_na)))
+      tagList(
+        pickerInput("surv_event_level",
+          "Which value means the event occurred?",
+          choices  = lvls,
+          selected = NULL,
+          multiple = FALSE,
+          options  = list(`none-selected-text` = "Select event level...")
+        ),
+        helpText("The other value will be treated as censored (event did not occur)."),
+        na_note
+      )
+    }
+  })
 
   # Main time to event analysis function
   run_surv <- function() {
@@ -10431,10 +10947,40 @@ server <- function(input, output, session) {
       design_df <- merge(design_df, meta_subset, by = "patient_ID", all.x = TRUE)
     }
 
-    # Attach outcome
+    # Attach outcome and event status
     design_df$time <- outcome
+    design_df$status <- build_event_status_vec(
+      patient_ids   = design_df$patient_ID,
+      meta_patient  = meta_patient,
+      update_status = isTRUE(input$surv_update_event_status),
+      event_source  = input$surv_event_source  %||% "metadata",
+      event_col     = input$surv_event_col,
+      event_level   = input$surv_event_level,
+      manual_ids    = input$surv_manual_ids,
+      manual_mark   = input$surv_manual_mark   %||% "selected_censored"
+    )
 
-    # Remove rows with missing values
+    # Warn if the event status column contained NAs (they were silently treated as censored)
+    if (isTRUE(input$surv_update_event_status) &&
+        identical(input$surv_event_source %||% "metadata", "metadata") &&
+        !is.null(input$surv_event_col) && nchar(input$surv_event_col) > 0 &&
+        input$surv_event_col %in% colnames(meta_patient)) {
+      n_na_status <- sum(is.na(meta_patient[[input$surv_event_col]]))
+      if (n_na_status > 0) {
+        showNotification(
+          paste0(n_na_status, " sample(s) had NA in event status column ('",
+                 input$surv_event_col, "') — interpreted as censored (event did not occur)."),
+          type = "warning", duration = 10
+        )
+      }
+    }
+
+    # Handle NA times before dropping incomplete rows:
+    #   event (status=1) with NA time  → drop + notify
+    #   censored (status=0) with NA time → impute max observed time + notify
+    design_df <- apply_time_na_rules(design_df)
+
+    # Remove rows with missing predictor values
     n_before <- nrow(design_df)
     design_df_complete <- design_df[complete.cases(design_df), ]
     n_after <- nrow(design_df_complete)
@@ -10444,11 +10990,6 @@ server <- function(input, output, session) {
     if (n_after < 10) {
       stop("Insufficient complete cases after removing missing values (n < 10).")
     }
-
-    # For survival analysis, we need an event indicator
-    # Since we don't have event data, we'll assume all events occurred (status = 1)
-    # This is a simplification - in real survival analysis you'd have censoring info
-    design_df_complete$status <- 1
 
     # Check if outcome variable is being used as a predictor
     predictor_cols <- setdiff(names(design_df_complete), c("patient_ID", "time", "status"))
@@ -10682,8 +11223,14 @@ server <- function(input, output, session) {
     formula_dichot_str <- paste("outcome_high ~", paste(predictor_cols, collapse = " + "))
     formula_dichot <- as.formula(formula_dichot_str)
 
-    # Fit logistic regression for dichotomized outcome
-    dichot_model <- glm(formula_dichot, data = design_df_complete, family = binomial)
+    # Fit logistic regression for dichotomized outcome.
+    # With many abundance predictors relative to sample size, near-complete separation is
+    # common and expected — suppress the resulting glm.fit convergence warnings since this
+    # model is used only for internal scoring and is not displayed in any output table.
+    dichot_model <- suppressWarnings(
+      glm(formula_dichot, data = design_df_complete, family = binomial,
+          control = glm.control(maxit = 100))
+    )
 
     return(list(
       analysis_mode = "multivariate",
@@ -10816,10 +11363,40 @@ server <- function(input, output, session) {
       design_df <- merge(design_df, meta_subset, by = "patient_ID", all.x = TRUE)
     }
 
-    # Attach outcome
+    # Attach outcome and event status
     design_df$time <- outcome
+    design_df$status <- build_event_status_vec(
+      patient_ids   = design_df$patient_ID,
+      meta_patient  = meta_patient,
+      update_status = isTRUE(input$surv_update_event_status),
+      event_source  = input$surv_event_source  %||% "metadata",
+      event_col     = input$surv_event_col,
+      event_level   = input$surv_event_level,
+      manual_ids    = input$surv_manual_ids,
+      manual_mark   = input$surv_manual_mark   %||% "selected_censored"
+    )
 
-    # Remove rows with missing values
+    # Warn if the event status column contained NAs (they were silently treated as censored)
+    if (isTRUE(input$surv_update_event_status) &&
+        identical(input$surv_event_source %||% "metadata", "metadata") &&
+        !is.null(input$surv_event_col) && nchar(input$surv_event_col) > 0 &&
+        input$surv_event_col %in% colnames(meta_patient)) {
+      n_na_status <- sum(is.na(meta_patient[[input$surv_event_col]]))
+      if (n_na_status > 0) {
+        showNotification(
+          paste0(n_na_status, " sample(s) had NA in event status column ('",
+                 input$surv_event_col, "') — interpreted as censored (event did not occur)."),
+          type = "warning", duration = 10
+        )
+      }
+    }
+
+    # Handle NA times before dropping incomplete rows:
+    #   event (status=1) with NA time  → drop + notify
+    #   censored (status=0) with NA time → impute max observed time + notify
+    design_df <- apply_time_na_rules(design_df)
+
+    # Remove rows with missing predictor values
     n_before <- nrow(design_df)
     design_df_complete <- design_df[complete.cases(design_df), ]
     n_after <- nrow(design_df_complete)
@@ -10829,9 +11406,6 @@ server <- function(input, output, session) {
     if (n_after < 10) {
       stop("Insufficient complete cases after removing missing values (n < 10).")
     }
-
-    # Add status indicator
-    design_df_complete$status <- 1
 
     # Get all predictor columns
     all_predictor_cols <- setdiff(names(design_df_complete), c("patient_ID", "time", "status"))
@@ -11539,10 +12113,38 @@ server <- function(input, output, session) {
       }, USE.NAMES = FALSE)
     }
     
+    hr_raw <- coef_matrix[, "exp(coef)"]
+
+    # Flag extreme Cox coefficients (|coef| > 15 → HR effectively 0 or Inf).
+    # A Cox coefficient outside ±15 is never a real biological effect; it invariably
+    # indicates near-complete separation. exp(-15) ≈ 3e-7, exp(15) ≈ 3.3e6.
+    # Using the log-scale coefficient is more robust than checking exp(coef) directly
+    # because exp() can silently underflow to 0 or overflow to Inf before we detect it.
+    raw_coefs       <- coef_matrix[, "coef"]
+    hr_extreme_mask <- !is.na(hr_raw) & (
+      !is.finite(hr_raw) |   # Inf or NaN from overflow/underflow
+      raw_coefs < -15 |       # HR near 0 \u2014 extreme negative separation
+      raw_coefs >  15         # HR near Inf \u2014 extreme positive separation
+    )
+    hr_raw[hr_extreme_mask] <- NA_real_
+    if (any(hr_extreme_mask)) {
+      extreme_features <- feature_names[hr_extreme_mask]
+      showNotification(
+        paste0(
+          "Extreme hazard ratio replaced with NA for: ",
+          paste(extreme_features, collapse = ", "),
+          ". |coefficient| > 15 indicates near-complete separation \u2014 ",
+          "the predictor almost perfectly discriminates event timing. ",
+          "Consider enabling regularization to constrain coefficients."
+        ),
+        type = "warning", duration = 15
+      )
+    }
+
     coef_df <- data.frame(
       Feature = feature_names,
       Coefficient = coef_matrix[, "coef"],
-      HazardRatio = coef_matrix[, "exp(coef)"],
+      HazardRatio = hr_raw,
       SE = coef_matrix[, "se(coef)"],
       Z_value = coef_matrix[, "z"],
       P_value_Cox = coef_matrix[, "Pr(>|z|)"],
@@ -11587,7 +12189,7 @@ server <- function(input, output, session) {
 
   output$surv_coefs <- renderTable({
     surv_coef_table(include_all_cols = FALSE)
-  })
+  }, digits = 4)
   
   # Dynamic header for coefficients table
   output$surv_coef_header <- renderUI({
@@ -11740,6 +12342,12 @@ server <- function(input, output, session) {
         },
         error = function(e) data.frame(Message = "Error extracting performance metrics")
       )
+      # Strip embedded newlines/carriage-returns from all text columns so that
+      # CSV readers (Excel, etc.) receive single-line cells.  The in-app table is
+      # unaffected because it renders the original data.frame from build_surv_perf_table.
+      perf_df[] <- lapply(perf_df, function(col) {
+        if (is.character(col)) gsub("[\r\n\t]+", " ", col) else col
+      })
       write.csv(perf_df, perf_file, row.names = FALSE)
       files <- c(files, perf_file)
 

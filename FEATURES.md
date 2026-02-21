@@ -89,6 +89,7 @@
 - **Cluster Heatmap**: configurable color theme (viridis, heat, greyscale), optional row/column clustering, downloadable as PDF.
 - **Cluster Annotation Engine**: define named cell types, assign clusters to them; annotations propagate throughout the app when "Celltypes" entity mode is selected.
 - **Apply Annotations**: annotations are held in a working state until explicitly applied to prevent accidental overwrites.
+- **Pre-fill from FCSimple**: when the uploaded object contains a `cluster_mapping` produced by `FCSimple::fcs_annotate_clusters()` and resolved by `fcs_prepare_fcview_object()`, the annotation UI is automatically pre-populated on upload with the existing cell type assignments; clusters with no assignment (`NA`) are safely excluded from the pre-fill.
 
 ### Collections Tab
 
@@ -185,8 +186,9 @@
 - **`patient_ID` Exclusion**: excluded from coercion, feature selection, and all picker lists.
 - **Reset Behavior**: changing feature visibility or type via the mini UI resets pairing and clears subsetting to prevent unexpected downstream behavior.
 - **Result State Caching**: all model/test results are stored in `reactiveVal` state objects; download handlers read run-time values (model type, validation strategy, outcome) captured at execution time rather than live inputs.
+- **Session Save/Restore**: the full app state (active features, type coercions, pairing variable, subsetting rules, annotations, collections, and all analysis tab settings) can be saved to a timestamped `.json` file from the Home tab and restored in a future session after re-uploading the same `.RData` file.
 
 ### Exporting & Reporting
 
-- **Download Handlers**: subset metadata CSV, cluster frequencies CSV, cluster counts CSV, sccomp results CSV, sccomp contrast CSV, sccomp interval plot PDF, sccomp contrast plot PDF, categorical plots PDF, continuous plots PDF, cluster heatmap PDF, UMAP/tSNE facet PDF, feature selection ZIP, classification ZIP, regression ZIP, time-to-event ZIP.
+- **Download Handlers**: subset metadata CSV, cluster frequencies CSV, cluster counts CSV, sccomp results CSV, sccomp contrast CSV, sccomp interval plot PDF, sccomp contrast plot PDF, categorical plots PDF, continuous plots PDF, cluster heatmap PDF, UMAP/tSNE facet PDF, feature selection ZIP, classification ZIP, regression ZIP, time-to-event ZIP, session state `.json`.
 - **Human-Readable Summaries**: `global_settings_summary`, pairing summaries, subsetting preview, and model console summaries provide concise overviews of current app state.

@@ -35,7 +35,7 @@ an object named \code{fcs_data} with the following structure:
 \item \code{data}: numeric matrix of cells × features
 \item \code{source}: character vector of sample identifiers
 \item \code{metadata}: data frame with sample-level metadata (must include \code{patient_ID})
-\item \code{cluster}: list containing cluster assignments, abundance, and counts
+\item \code{cluster}: list containing cluster assignments, frequency, fraction, and counts
 \item \code{umap} or \code{tsne}: list with \code{coordinates} data frame (optional)
 \item \code{cluster_heatmap}: list with heatmap tile data
 }

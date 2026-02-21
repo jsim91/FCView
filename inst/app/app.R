@@ -35,6 +35,7 @@ suppressPackageStartupMessages({
     library(sccomp)
     library(survival) # Cox proportional hazards, survfit, cox.zph
     library(survminer) # ggsurvplot for better survival curve visualization
+    library(jsonlite)  # JSON serialization for session save/restore
   })
 })
 
@@ -157,10 +158,10 @@ compute_multiROC <- function(preds) {
 }
 
 # Aggregate clusters to celltypes
-aggregate_to_celltypes <- function(mat, cluster_map, type = "abundance") {
+aggregate_to_celltypes <- function(mat, cluster_map, type = "frequency") {
   # mat: matrix with samples as rows, clusters as columns
   # cluster_map: data.frame with 'cluster' and 'celltype' columns
-  # type: "abundance" or "counts" (determines summing behavior)
+  # type: "frequency" or "counts" (determines summing behavior)
   
   if (is.null(cluster_map) || nrow(cluster_map) == 0) {
     stop("No cluster_map available for celltype aggregation")
@@ -1002,7 +1003,7 @@ ui <- navbarPage(
     sidebarLayout(
       sidebarPanel(
         fileInput("rdata_upload", "Upload .RData (FCSimple analysis object)", accept = ".RData"),
-        numericInput("max_cells_upload", "Max cells to read in", value = 300000, min = 1000, step = 1000),
+        numericInput("max_cells_upload", "Max cells to read in", value = 100000, min = 1000, step = 1000),
         helpText("If the uploaded dataset has more cells than this number, it will be randomly downsampled after upload. This is done to speed up UMAP and tSNE facet plotting."),
         width = 3
       ),
@@ -1055,7 +1056,7 @@ ui <- navbarPage(
         column(
           6,
           h4("Subsetting Rules"),
-          uiOutput("subsetting_rules_ui"),
+          div(id = "subsetting_rules_wrapper", uiOutput("subset_no_rules_msg")),
           br(),
           actionButton("add_subset_rule", "Add Rule", icon = icon("plus")),
           br(), br(),
@@ -1089,6 +1090,30 @@ ui <- navbarPage(
         12,
         uiOutput("export_buttons_ui"),
         br()
+      )
+    ),
+    hr(),
+    h3("Session State"),
+    helpText(
+      "Save your current settings (features, coercions, pairing, subsetting rules, annotations, collections, and sccomp settings) to a JSON file.",
+      "In a future session, upload your .RData file first, then restore the session state file to return the app to where you left off.",
+      "Computed results (test outputs, model results, plots) are not saved."
+    ),
+    fluidRow(
+      column(
+        4,
+        conditionalPanel(
+          condition = "output.dataReady",
+          downloadButton("download_session_state", "Save Session State (.json)", class = "btn-success")
+        )
+      ),
+      column(
+        8,
+        fileInput("upload_session_state", NULL,
+          accept = ".json",
+          buttonLabel = "Restore Session State",
+          placeholder = "Upload a previously saved session .json"
+        )
       )
     )
   ),
@@ -1524,6 +1549,13 @@ ui <- navbarPage(
   tabPanel(
     "sccomp",
     h4("Differential Composition Analysis with sccomp"),
+    helpText(
+      "This tab wraps the ",
+      tags$a("sccomp", href = "https://github.com/MangiolaLaboratory/sccomp", target = "_blank"),
+      " R package (Mangiola Laboratory). Please cite sccomp when publishing results from this analysis: ",
+      tags$em("Mangiola et al., sccomp: Robust differential composition and variability analysis for single-cell data (2023)."),
+      " See the GitHub page for full documentation and citation details."
+    ),
     fluidRow(
       column(
         3,
@@ -1904,6 +1936,12 @@ server <- function(input, output, session) {
       obj$umap$coordinates <- as.data.frame(obj$umap$coordinates)
     }
 
+    # Normalize legacy field names (abundance -> frequency/fraction/counts)
+    if (!is.null(obj$cluster$abundance) && is.null(obj$cluster$frequency)) {
+      obj$cluster$frequency <- obj$cluster$abundance
+      obj$cluster$abundance <- NULL
+    }
+
     # --- Downsample cells if needed (NEVER downsample sample-level metadata) ---
     n_cells <- nrow(obj$data)
     max_cells <- input$max_cells_upload %||% 300000
@@ -2021,7 +2059,7 @@ server <- function(input, output, session) {
 
     clusters <- list(
       assignments = obj$cluster$clusters,
-      settings    = obj$cluster$settings %||% list()
+      settings = obj$cluster$settings %||% list()
     )
     cluster_map <- if (!is.null(obj$cluster_mapping)) obj$cluster_mapping else NULL
 
@@ -2046,28 +2084,28 @@ server <- function(input, output, session) {
     pop_size <- if (!is.null(obj$cluster_heatmap)) obj$cluster_heatmap$population_size else NULL
     rep_used <- if (!is.null(obj$cluster_heatmap)) obj$cluster_heatmap$rep_used else NA
 
-    # --- Add per-sample abundance matrix and canonical per-sample metadata for downstream tabs ---
-    if (!is.null(obj$cluster$abundance) && is.matrix(obj$cluster$abundance)) {
-      clusters$abundance <- obj$cluster$abundance
-      rv$abundance_sample <- clusters$abundance
+    # --- Add per-sample frequency matrix and canonical per-sample metadata for downstream tabs ---
+    if (!is.null(obj$cluster$frequency) && is.matrix(obj$cluster$frequency)) {
+      clusters$frequency <- obj$cluster$frequency
+      rv$frequency_sample <- clusters$frequency
 
-      if (is.null(rownames(rv$abundance_sample)) || any(!nzchar(rownames(rv$abundance_sample)))) {
+      if (is.null(rownames(rv$frequency_sample)) || any(!nzchar(rownames(rv$frequency_sample)))) {
         showNotification(
-          "cluster$abundance has missing rownames; cannot map to metadata. Please set rownames to source strings.",
+          "cluster$frequency has missing rownames; cannot map to metadata. Please set rownames to source strings.",
           type = "error",
           duration = NULL
         )
-        message("Abundance matrix rownames are missing or empty; mapping to metadata will fail.")
+        message("Frequency matrix rownames are missing or empty; mapping to metadata will fail.")
       } else {
         message(sprintf(
-          "Abundance matrix loaded: %d sources × %d entities",
-          nrow(rv$abundance_sample), ncol(rv$abundance_sample)
+          "Frequency matrix loaded: %d sources × %d entities",
+          nrow(rv$frequency_sample), ncol(rv$frequency_sample)
         ))
       }
     } else {
-      clusters$abundance <- NULL
-      rv$abundance_sample <- NULL
-      showNotification("No cluster$abundance matrix found in upload; abundance-based tabs will be disabled.", type = "warning")
+      clusters$frequency <- NULL
+      rv$frequency_sample <- NULL
+      showNotification("No cluster$frequency matrix found in upload; frequency-based tabs will be disabled.", type = "warning")
     }
 
     # Load counts data for sccomp
@@ -2105,12 +2143,14 @@ server <- function(input, output, session) {
     
     # Initialize celltype annotations from cluster_map if available
     if (!is.null(cluster_map) && all(c("cluster", "celltype") %in% names(cluster_map))) {
-      # Extract unique celltypes and their cluster mappings
+      # Exclude NA celltypes — those are clusters the user intentionally left
+      # unassigned via fcs_annotate_clusters(); they are treated as pending
+      # assignment and should not be pre-filled in the annotation UI.
       annotations <- list()
-      celltype_names <- unique(cluster_map$celltype)
+      celltype_names <- unique(stats::na.omit(cluster_map$celltype))
       for (i in seq_along(celltype_names)) {
         ct <- celltype_names[i]
-        assigned_clusters <- cluster_map$cluster[cluster_map$celltype == ct]
+        assigned_clusters <- cluster_map$cluster[!is.na(cluster_map$celltype) & cluster_map$celltype == ct]
         annotations[[as.character(i)]] <- list(
           id = i,
           name = ct,
@@ -2119,7 +2159,8 @@ server <- function(input, output, session) {
       }
       rv$celltype_annotations <- annotations
       celltype_id_counter(length(celltype_names))
-      message("Initialized celltype annotations from cluster_map: ", length(celltype_names), " cell types")
+      message("Initialized celltype annotations from cluster_map: ", length(celltype_names), " cell types (",
+              sum(is.na(cluster_map$celltype)), " cluster(s) left unassigned)")
     } else {
       rv$celltype_annotations <- list()
       celltype_id_counter(0)
@@ -2130,7 +2171,7 @@ server <- function(input, output, session) {
       "Upload complete: expr rows=", nrow(rv$expr),
       " meta_cell rows=", nrow(rv$meta_cell),
       " meta_sample rows=", nrow(rv$meta_sample),
-      " abundance_sample rows=", if (!is.null(rv$abundance_sample)) nrow(rv$abundance_sample) else 0,
+      " frequency_sample rows=", if (!is.null(rv$frequency_sample)) nrow(rv$frequency_sample) else 0,
       " UMAP coords=", if (!is.null(rv$UMAP)) nrow(rv$UMAP$coords) else 0,
       " tSNE coords=", if (!is.null(rv$tSNE)) nrow(rv$tSNE$coords) else 0
     )
@@ -2157,7 +2198,7 @@ server <- function(input, output, session) {
       updatePickerInput(session, "fs_outcome", choices = fs_outcome_choices, selected = NULL)
       updatePickerInput(session, "fs_predictors", choices = c(predictor_choices, "cluster"), selected = NULL)
       updatePickerInput(session, "fs_cluster_subset",
-        choices = if (!is.null(rv$abundance_sample)) colnames(rv$abundance_sample) else character(0),
+        choices = if (!is.null(rv$frequency_sample)) colnames(rv$frequency_sample) else character(0),
         selected = character(0)
       )
 
@@ -2165,7 +2206,7 @@ server <- function(input, output, session) {
       updatePickerInput(session, "lm_outcome", choices = categorical_choices, selected = NULL)
       updatePickerInput(session, "lm_predictors", choices = c(predictor_choices, "cluster"), selected = NULL)
       updatePickerInput(session, "lm_cluster_subset",
-        choices = if (!is.null(rv$abundance_sample)) colnames(rv$abundance_sample) else character(0),
+        choices = if (!is.null(rv$frequency_sample)) colnames(rv$frequency_sample) else character(0),
         selected = character(0)
       )
     }
@@ -2346,6 +2387,7 @@ server <- function(input, output, session) {
           rv$subset_rules <- list()
           rv$subset_summary <- NULL
           rv$subset_id <- "000000000"
+          tryCatch({ removeUI(selector = "[id^='rule_container_']", multiple = TRUE, immediate = TRUE) }, error = function(e) {})
           tryCatch({ subset_rule_ids(integer(0)) }, error = function(e) {})
           tryCatch({ subset_next_id(1) }, error = function(e) {})
           tryCatch({ updateCheckboxInput(session, "enable_subsetting", value = FALSE) }, error = function(e) {})
@@ -2366,6 +2408,7 @@ server <- function(input, output, session) {
           rv$subset_rules <- list()
           rv$subset_summary <- NULL
           rv$subset_id <- "000000000"
+          tryCatch({ removeUI(selector = "[id^='rule_container_']", multiple = TRUE, immediate = TRUE) }, error = function(e) {})
           tryCatch({ subset_rule_ids(integer(0)) }, error = function(e) {})
           tryCatch({ subset_next_id(1) }, error = function(e) {})
           tryCatch({ updateCheckboxInput(session, "enable_subsetting", value = FALSE) }, error = function(e) {})
@@ -2448,6 +2491,7 @@ server <- function(input, output, session) {
       rv$subset_rules <- list()
       rv$subset_summary <- NULL
       rv$subset_id <- "000000000"
+      removeUI(selector = "[id^='rule_container_']", multiple = TRUE, immediate = TRUE)
       subset_rule_ids(integer(0))
       subset_next_id(1)
       updateCheckboxInput(session, "enable_subsetting", value = FALSE)
@@ -2603,269 +2647,225 @@ server <- function(input, output, session) {
   subset_rule_ids <- reactiveVal(integer(0))
   subset_next_id <- reactiveVal(1)
 
-  # Render subsetting rules UI
-  output$subsetting_rules_ui <- renderUI({
-    req(rv$meta_sample_original)
-
-    rule_ids <- subset_rule_ids()
-    if (length(rule_ids) == 0) {
-      return(tags$p(style = "color: #999; font-style: italic;", "Click 'Add Rule' to create a subsetting rule."))
+  # ── Per-rule UI builder ─────────────────────────────────────────────────────
+  # Returns the self-contained div inserted into #subsetting_rules_wrapper.
+  # Kept as a plain function (not reactive) so it can be called from both
+  # the add-rule handler and the state-restore path.
+  make_rule_ui <- function(rule_id, meta_cols, initial_col = NULL) {
+    ns_id <- paste0("rule_", rule_id)
+    if (is.null(initial_col) || !nzchar(initial_col) || !(initial_col %in% meta_cols)) {
+      initial_col <- meta_cols[1]
     }
-
-    meta_cols <- colnames(rv$meta_sample_original)
-
-    rule_uis <- lapply(rule_ids, function(rule_id) {
-      ns_id <- paste0("rule_", rule_id)
-
-      # Preserve existing column selection if it exists
-      current_col <- input[[paste0(ns_id, "_col")]]
-      if (is.null(current_col)) current_col <- meta_cols[1]
-
-      tags$div(
-        id = paste0("rule_container_", rule_id),
-        style = "border: 1px solid #ddd; padding: 10px; margin-bottom: 10px; border-radius: 4px; background-color: #f9f9f9;",
-        fluidRow(
-          column(
-            5,
-            selectInput(paste0(ns_id, "_col"), "Column", choices = meta_cols, selected = current_col)
-          ),
-          column(
-            6,
-            uiOutput(paste0(ns_id, "_values_ui"))
-          ),
-          column(
-            1,
-            br(),
-            actionButton(paste0("remove_rule_", rule_id), "",
-              icon = icon("trash"), class = "btn-danger btn-sm",
-              style = "margin-top: 5px;"
-            )
+    tags$div(
+      id = paste0("rule_container_", rule_id),
+      style = "border: 1px solid #ddd; padding: 10px; margin-bottom: 10px; border-radius: 4px; background-color: #f9f9f9;",
+      fluidRow(
+        column(5, selectInput(paste0(ns_id, "_col"), "Column", choices = meta_cols, selected = initial_col)),
+        column(6, uiOutput(paste0(ns_id, "_values_ui"))),
+        column(
+          1, br(),
+          actionButton(paste0("remove_rule_", rule_id), "",
+            icon = icon("trash"), class = "btn-danger btn-sm",
+            style = "margin-top: 5px;"
           )
         )
       )
-    })
+    )
+  }
 
-    tagList(rule_uis)
-  })
+  # ── Per-rule observer setup ──────────────────────────────────────────────────
+  # Registers the column-change observer and the remove-button observer for
+  # exactly one rule. Captures saved_rule in its closure so state restore can
+  # seed the initial UI values without going through rv$subset_rules.
+  setup_rule <- function(rule_id, saved_rule = NULL) {
+    ns_id           <- paste0("rule_", rule_id)
+    col_input_id    <- paste0(ns_id, "_col")
+    values_ui_id    <- paste0(ns_id, "_values_ui")
+    values_input_id <- paste0(ns_id, "_values")
 
-  # Dynamically create value pickers for each rule
-  observe({
-    req(rv$meta_sample_original)
-    rule_ids <- subset_rule_ids()
-    if (length(rule_ids) == 0) {
-      return()
-    }
+    # Remove-button: tear down DOM node and drop ID from tracking (once only)
+    observeEvent(input[[paste0("remove_rule_", rule_id)]], {
+      if (session$isEnded()) return()
+      removeUI(selector = paste0("#rule_container_", rule_id), immediate = TRUE)
+      subset_rule_ids(setdiff(subset_rule_ids(), rule_id))
+    }, ignoreInit = TRUE, ignoreNULL = TRUE, once = TRUE)
 
-    lapply(rule_ids, function(rule_id) {
-      ns_id <- paste0("rule_", rule_id)
-      col_input_id <- paste0(ns_id, "_col")
-      values_ui_id <- paste0(ns_id, "_values_ui")
-      values_input_id <- paste0(ns_id, "_values")
+    # Column-change: (re-)render the values sub-UI for this rule only.
+    # saved_rule seeds initial values; subsequent fires use live input state.
+    observeEvent(input[[col_input_id]], {
+      if (session$isEnded()) return()
 
-      # Only re-render when column changes (not when values change)
-      observeEvent(input[[col_input_id]],
-        {
-          # Guard against shutdown
-          if (session$isEnded()) return()
-          
-          selected_col <- input[[col_input_id]]
-          if (is.null(selected_col) || !nzchar(selected_col)) {
-            output[[values_ui_id]] <- renderUI(NULL)
-            return()
-          }
+      selected_col <- input[[col_input_id]]
+      if (is.null(selected_col) || !nzchar(selected_col)) {
+        output[[values_ui_id]] <- renderUI(NULL)
+        return()
+      }
 
-          req(selected_col %in% colnames(rv$meta_sample_original))
-          col_data <- rv$meta_sample_original[[selected_col]]
+      req(selected_col %in% colnames(rv$meta_sample_original))
+      col_data <- rv$meta_sample_original[[selected_col]]
 
-          # Check if column is numeric
-          if (is.numeric(col_data)) {
-            # Numeric column: show operator + slider
-            col_range <- range(col_data, na.rm = TRUE)
-            col_mean <- mean(col_data, na.rm = TRUE)
-            col_median <- median(col_data, na.rm = TRUE)
-            step_size <- (col_range[2] - col_range[1]) / 100
+      if (is.numeric(col_data)) {
+        # ── Numeric column ───────────────────────────────────────────────────
+        col_range  <- range(col_data, na.rm = TRUE)
+        col_mean   <- mean(col_data,  na.rm = TRUE)
+        col_median <- median(col_data, na.rm = TRUE)
+        step_size  <- (col_range[2] - col_range[1]) / 100
 
-            # Preserve existing selections if available
-            current_operator <- isolate(input[[paste0(ns_id, "_operator")]])
-            current_slider <- isolate(input[[paste0(ns_id, "_slider")]])
-            if (is.null(current_operator)) current_operator <- "above"
-            if (is.null(current_slider)) current_slider <- col_median
-
-            operator_input_id <- paste0(ns_id, "_operator")
-            slider_input_id <- paste0(ns_id, "_slider")
-            mean_btn_id <- paste0(ns_id, "_mean_btn")
-            median_btn_id <- paste0(ns_id, "_median_btn")
-
-            output[[values_ui_id]] <- renderUI({
-              tagList(
-                radioButtons(
-                  operator_input_id,
-                  "Filter type",
-                  choices = c(
-                    "Above or equal (>=)" = "above",
-                    "Below or equal (<=)" = "below",
-                    "Range (internal)" = "range_internal",
-                    "Range (external)" = "range_external"
-                  ),
-                  selected = current_operator,
-                  inline = FALSE
-                ),
-                fluidRow(
-                  column(6, actionButton(mean_btn_id, "Mean", class = "btn-sm btn-default", style = "width: 100%;")),
-                  column(6, actionButton(median_btn_id, "Median", class = "btn-sm btn-default", style = "width: 100%;"))
-                ),
-                uiOutput(paste0(ns_id, "_slider_ui")),
-                checkboxInput(paste0(ns_id, "_exclude_missing"), "Exclude NA values", value = isTRUE(isolate(input[[paste0(ns_id, "_exclude_missing")]])))
+        # Prefer live UI values; fall back to saved_rule, then column defaults.
+        # isolate() prevents these reads from creating reactive dependencies.
+        current_operator <- isolate(input[[paste0(ns_id, "_operator")]]) %||%
+                            saved_rule$operator %||% "above"
+        current_slider   <- isolate(input[[paste0(ns_id, "_slider")]])
+        if (is.null(current_slider)) {
+          if (!is.null(saved_rule)) {
+            if (isTRUE(saved_rule$operator %in% c("range_internal", "range_external"))) {
+              current_slider <- c(
+                saved_rule$threshold_min %||% col_range[1],
+                saved_rule$threshold_max %||% col_range[2]
               )
-            })
-
-            # Render appropriate slider based on operator selection
-            output[[paste0(ns_id, "_slider_ui")]] <- renderUI({
-              req(input[[operator_input_id]])
-              operator <- input[[operator_input_id]]
-
-              if (operator %in% c("range_internal", "range_external")) {
-                # Range slider with two handles
-                current_range <- isolate(input[[slider_input_id]])
-                if (is.null(current_range) || length(current_range) != 2) {
-                  # Default to quartiles for initial range
-                  current_range <- quantile(col_data, probs = c(0.25, 0.75), na.rm = TRUE)
-                }
-                sliderInput(
-                  slider_input_id,
-                  "Value range",
-                  min = col_range[1],
-                  max = col_range[2],
-                  value = current_range,
-                  step = step_size
-                )
-              } else {
-                # Single-value slider
-                current_val <- isolate(input[[slider_input_id]])
-                if (is.null(current_val) || length(current_val) != 1) {
-                  current_val <- col_median
-                } else if (length(current_val) > 1) {
-                  # If switching from range to single, use the midpoint
-                  current_val <- mean(current_val)
-                }
-                sliderInput(
-                  slider_input_id,
-                  "Threshold value",
-                  min = col_range[1],
-                  max = col_range[2],
-                  value = current_val,
-                  step = step_size
-                )
-              }
-            })
-
-            # Add observers for mean/median buttons
-            observeEvent(input[[mean_btn_id]],
-              {
-                # Guard against shutdown
-                if (session$isEnded()) return()
-                
-                operator <- input[[operator_input_id]]
-                if (!is.null(operator) && operator %in% c("range_internal", "range_external")) {
-                  # For range, center around mean
-                  margin <- (col_range[2] - col_range[1]) * 0.25
-                  updateSliderInput(session, slider_input_id, value = c(col_mean - margin, col_mean + margin))
-                } else {
-                  updateSliderInput(session, slider_input_id, value = col_mean)
-                }
-              },
-              ignoreInit = TRUE
-            )
-
-            observeEvent(input[[median_btn_id]],
-              {
-                # Guard against shutdown
-                if (session$isEnded()) return()
-                
-                operator <- input[[operator_input_id]]
-                if (!is.null(operator) && operator %in% c("range_internal", "range_external")) {
-                  # For range, center around median
-                  margin <- (col_range[2] - col_range[1]) * 0.25
-                  updateSliderInput(session, slider_input_id, value = c(col_median - margin, col_median + margin))
-                } else {
-                  updateSliderInput(session, slider_input_id, value = col_median)
-                }
-              },
-              ignoreInit = TRUE
-            )
-          } else {
-            # Categorical column: show pickerInput + option to exclude missing/blank
-            unique_vals <- sort(unique(as.character(col_data)))
-            unique_vals <- unique_vals[!is.na(unique_vals)]
-
-            # Use isolate to read current values without creating dependency
-            current_values <- isolate(input[[values_input_id]])
-            if (is.null(current_values)) {
-              # Default to all values if no prior selection
-              selected_vals <- unique_vals
             } else {
-              # Keep existing selection (intersect to handle column changes)
-              selected_vals <- intersect(current_values, unique_vals)
-              if (length(selected_vals) == 0) selected_vals <- unique_vals
+              current_slider <- saved_rule$threshold %||% col_median
             }
-
-            output[[values_ui_id]] <- renderUI({
-              tagList(
-                pickerInput(
-                  values_input_id,
-                  "Values to keep",
-                  choices = unique_vals,
-                  selected = selected_vals,
-                  multiple = TRUE,
-                  options = list(
-                    `actions-box` = TRUE,
-                    `selected-text-format` = "count > 3",
-                    `deselect-all-text` = "Deselect All",
-                    `select-all-text` = "Select All",
-                    `none-selected-text` = "No values selected",
-                    `live-search` = TRUE
-                  )
-                )
-                # (No exclude checkbox for categorical columns)
-              )
-            })
+          } else {
+            current_slider <- col_median
           }
-        },
-        ignoreNULL = TRUE,
-        ignoreInit = FALSE
-      )
-    })
+        }
+
+        operator_input_id <- paste0(ns_id, "_operator")
+        slider_input_id   <- paste0(ns_id, "_slider")
+        mean_btn_id       <- paste0(ns_id, "_mean_btn")
+        median_btn_id     <- paste0(ns_id, "_median_btn")
+
+        output[[values_ui_id]] <- renderUI({
+          tagList(
+            radioButtons(
+              operator_input_id, "Filter type",
+              choices = c(
+                "Above or equal (>=)" = "above",
+                "Below or equal (<=)" = "below",
+                "Range (internal)"    = "range_internal",
+                "Range (external)"    = "range_external"
+              ),
+              selected = current_operator,
+              inline = FALSE
+            ),
+            fluidRow(
+              column(6, actionButton(mean_btn_id,   "Mean",   class = "btn-sm btn-default", style = "width: 100%;")),
+              column(6, actionButton(median_btn_id, "Median", class = "btn-sm btn-default", style = "width: 100%;"))
+            ),
+            uiOutput(paste0(ns_id, "_slider_ui")),
+            checkboxInput(
+              paste0(ns_id, "_exclude_missing"), "Exclude NA values",
+              value = isTRUE(
+                saved_rule$exclude_missing %||%
+                isolate(input[[paste0(ns_id, "_exclude_missing")]])
+              )
+            )
+          )
+        })
+
+        output[[paste0(ns_id, "_slider_ui")]] <- renderUI({
+          req(input[[operator_input_id]])
+          operator <- input[[operator_input_id]]
+          if (operator %in% c("range_internal", "range_external")) {
+            current_range <- isolate(input[[slider_input_id]])
+            if (is.null(current_range) || length(current_range) != 2) {
+              current_range <- quantile(col_data, probs = c(0.25, 0.75), na.rm = TRUE)
+            }
+            sliderInput(slider_input_id, "Value range",
+              min = col_range[1], max = col_range[2], value = current_range, step = step_size)
+          } else {
+            current_val <- isolate(input[[slider_input_id]])
+            if (is.null(current_val) || length(current_val) != 1) {
+              current_val <- col_median
+            } else if (length(current_val) > 1) {
+              current_val <- mean(current_val)
+            }
+            sliderInput(slider_input_id, "Threshold value",
+              min = col_range[1], max = col_range[2], value = current_val, step = step_size)
+          }
+        })
+
+        observeEvent(input[[mean_btn_id]], {
+          if (session$isEnded()) return()
+          operator <- input[[operator_input_id]]
+          if (!is.null(operator) && operator %in% c("range_internal", "range_external")) {
+            margin <- (col_range[2] - col_range[1]) * 0.25
+            updateSliderInput(session, slider_input_id, value = c(col_mean - margin, col_mean + margin))
+          } else {
+            updateSliderInput(session, slider_input_id, value = col_mean)
+          }
+        }, ignoreInit = TRUE)
+
+        observeEvent(input[[median_btn_id]], {
+          if (session$isEnded()) return()
+          operator <- input[[operator_input_id]]
+          if (!is.null(operator) && operator %in% c("range_internal", "range_external")) {
+            margin <- (col_range[2] - col_range[1]) * 0.25
+            updateSliderInput(session, slider_input_id, value = c(col_median - margin, col_median + margin))
+          } else {
+            updateSliderInput(session, slider_input_id, value = col_median)
+          }
+        }, ignoreInit = TRUE)
+
+      } else {
+        # ── Categorical column ───────────────────────────────────────────────
+        unique_vals <- sort(unique(as.character(col_data)))
+        unique_vals <- unique_vals[!is.na(unique_vals)]
+
+        current_values <- isolate(input[[values_input_id]])
+        if (is.null(current_values)) {
+          saved_vals    <- if (!is.null(saved_rule$values)) intersect(unlist(saved_rule$values), unique_vals) else character(0)
+          selected_vals <- if (length(saved_vals) > 0) saved_vals else unique_vals
+        } else {
+          selected_vals <- intersect(current_values, unique_vals)
+          if (length(selected_vals) == 0) selected_vals <- unique_vals
+        }
+
+        output[[values_ui_id]] <- renderUI({
+          tagList(
+            pickerInput(
+              values_input_id, "Values to keep",
+              choices  = unique_vals,
+              selected = selected_vals,
+              multiple = TRUE,
+              options  = list(
+                `actions-box`          = TRUE,
+                `selected-text-format` = "count > 3",
+                `deselect-all-text`    = "Deselect All",
+                `select-all-text`      = "Select All",
+                `none-selected-text`   = "No values selected",
+                `live-search`          = TRUE
+              )
+            )
+          )
+        })
+      }
+    }, ignoreNULL = TRUE, ignoreInit = FALSE)
+  }
+
+  # Placeholder shown only when no rules exist
+  output$subset_no_rules_msg <- renderUI({
+    if (length(subset_rule_ids()) == 0)
+      tags$p(style = "color: #999; font-style: italic;", "Click 'Add Rule' to create a subsetting rule.")
+    else
+      NULL
   })
 
-  # Add rule button
+  # Add rule: insert independent DOM node + register scoped observers
   observeEvent(input$add_subset_rule, {
-    new_id <- subset_next_id()
+    req(rv$meta_sample_original)
+    new_id    <- subset_next_id()
+    meta_cols <- colnames(rv$meta_sample_original)
+    insertUI(
+      selector = "#subsetting_rules_wrapper",
+      where    = "beforeEnd",
+      ui       = make_rule_ui(new_id, meta_cols, initial_col = meta_cols[1]),
+      immediate = TRUE
+    )
     subset_rule_ids(c(subset_rule_ids(), new_id))
     subset_next_id(new_id + 1)
-  })
-
-  # Remove rule buttons (dynamic observers for each rule ID)
-  observe({
-    rule_ids <- subset_rule_ids()
-    if (length(rule_ids) == 0) {
-      return()
-    }
-
-    lapply(rule_ids, function(rule_id) {
-      observeEvent(input[[paste0("remove_rule_", rule_id)]],
-        {
-          # Guard against shutdown
-          if (session$isEnded()) return()
-          
-          # Remove this specific rule ID from the list
-          current_ids <- subset_rule_ids()
-          subset_rule_ids(setdiff(current_ids, rule_id))
-        },
-        ignoreInit = TRUE,
-        ignoreNULL = TRUE,
-        once = TRUE
-      )
-    })
+    setup_rule(new_id, saved_rule = NULL)
   })
 
   # Apply subsetting
@@ -3135,6 +3135,7 @@ server <- function(input, output, session) {
       rv$subset_summary <- NULL
       # Reset subset_id to default when subsetting is disabled
       rv$subset_id <- "000000000"
+      removeUI(selector = "[id^='rule_container_']", multiple = TRUE, immediate = TRUE)
       subset_rule_ids(integer(0))
       subset_next_id(1)
     }
@@ -3211,6 +3212,9 @@ server <- function(input, output, session) {
     !is.null(rv$subset_id)
   })
   outputOptions(output, "hasSubset", suspendWhenHidden = FALSE)
+
+  output$dataReady <- reactive({ isTRUE(rv$data_ready) })
+  outputOptions(output, "dataReady", suspendWhenHidden = FALSE)
 
   # ==== Cluster Annotation Engine ====
   
@@ -3744,24 +3748,34 @@ server <- function(input, output, session) {
         } else {
           as.character(clusters)
         }
-        
-        # Update picker with new choices (clear selection since items are different)
-        # Wrap in tryCatch to handle shutdown gracefully
-        tryCatch({
-          updatePickerInput(
-            session = session,
-            inputId = items_input_id,
-            choices = new_choices,
-            selected = character(0)
+
+        # Only clear items if the type *actually changed* from what is stored.
+        # When renderUI re-creates the radioButtons (e.g., after state restore),
+        # the input fires NULL → stored_type, which looks like a change but isn't.
+        # Without this guard that init-fire wipes the restored items immediately.
+        stored_type <- new_working_state[[coll_id]]$type %||% "cluster"
+        type_changed <- !identical(selected_type, stored_type)
+
+        if (type_changed) {
+          # Genuine user-driven type change: clear items and reset picker
+          new_working_state[[coll_id]]$type  <- selected_type
+          new_working_state[[coll_id]]$items <- character(0)
+          tryCatch({
+            updatePickerInput(session = session, inputId = items_input_id,
+              choices = new_choices, selected = character(0))
+          }, error = function(e) NULL)
+        } else {
+          # UI initialisation (same type): keep existing items, just refresh choices
+          new_working_state[[coll_id]]$type <- selected_type
+          existing_items <- intersect(
+            as.character(new_working_state[[coll_id]]$items %||% character(0)),
+            new_choices
           )
-        }, error = function(e) {
-          # Silently ignore errors during shutdown
-          NULL
-        })
-        
-        # Update THIS collection specifically (clear items on type change)
-        new_working_state[[coll_id]]$type <- selected_type
-        new_working_state[[coll_id]]$items <- character(0)  # Clear items on type change
+          tryCatch({
+            updatePickerInput(session = session, inputId = items_input_id,
+              choices = new_choices, selected = existing_items)
+          }, error = function(e) NULL)
+        }
         
         # FINALLY: Assign the complete new state (only ONE reactive trigger)
         rv$cluster_collections_working <- new_working_state
@@ -3825,20 +3839,20 @@ server <- function(input, output, session) {
     }
   )
 
-  # Export subset cluster frequencies (abundance data)
+  # Export subset cluster frequencies (frequency data)
   output$export_subset_frequencies <- downloadHandler(
     filename = function() {
       subset_id <- rv$subset_id %||% "000000000"
       paste0("subset_cluster_frequencies_", subset_id, ".csv")
     },
     content = function(file) {
-      req(rv$abundance_sample, rv$meta_sample)
+      req(rv$frequency_sample, rv$meta_sample)
 
       # Get patient_IDs from current subsetted metadata in exact order
       subset_ids <- rv$meta_sample$patient_ID
 
       # Filter and reorder abundance data to match metadata row order exactly
-      abundance_subset <- rv$abundance_sample[match(subset_ids, rownames(rv$abundance_sample)), , drop = FALSE]
+      abundance_subset <- rv$frequency_sample[match(subset_ids, rownames(rv$frequency_sample)), , drop = FALSE]
 
       # Add patient_ID as first column (in same order as metadata)
       abundance_export <- data.frame(patient_ID = subset_ids, abundance_subset, check.names = FALSE)
@@ -4231,7 +4245,7 @@ server <- function(input, output, session) {
       choices <- unique(rv$cluster_map$celltype)
       label <- "Select celltypes to include"
     } else {
-      choices <- if (!is.null(rv$abundance_sample)) colnames(rv$abundance_sample) else character(0)
+      choices <- if (!is.null(rv$frequency_sample)) colnames(rv$frequency_sample) else character(0)
       label <- "Select clusters to include"
     }
     
@@ -4246,7 +4260,7 @@ server <- function(input, output, session) {
       choices <- unique(rv$cluster_map$celltype)
       label <- "Select celltypes to include"
     } else {
-      choices <- if (!is.null(rv$abundance_sample)) colnames(rv$abundance_sample) else character(0)
+      choices <- if (!is.null(rv$frequency_sample)) colnames(rv$frequency_sample) else character(0)
       label <- "Select clusters to include"
     }
     
@@ -4261,7 +4275,7 @@ server <- function(input, output, session) {
       choices <- unique(rv$cluster_map$celltype)
       label <- "Select celltypes to include"
     } else {
-      choices <- if (!is.null(rv$abundance_sample)) colnames(rv$abundance_sample) else character(0)
+      choices <- if (!is.null(rv$frequency_sample)) colnames(rv$frequency_sample) else character(0)
       label <- "Select clusters to include"
     }
     
@@ -4276,7 +4290,7 @@ server <- function(input, output, session) {
       choices <- unique(rv$cluster_map$celltype)
       label <- "Select celltypes to include"
     } else {
-      choices <- if (!is.null(rv$abundance_sample)) colnames(rv$abundance_sample) else character(0)
+      choices <- if (!is.null(rv$frequency_sample)) colnames(rv$frequency_sample) else character(0)
       label <- "Select clusters to include"
     }
     
@@ -4528,7 +4542,7 @@ server <- function(input, output, session) {
     }
   })
 
-  get_cluster_clusters <- function() colnames(rv$clusters$abundance)
+  get_cluster_clusters <- function() colnames(rv$clusters$frequency)
 
   # Helper function to filter choices based on global settings
   filter_by_global_settings <- function(choices) {
@@ -4902,7 +4916,7 @@ server <- function(input, output, session) {
 
   # Store results + adj_col name from the run
   run_tests <- eventReactive(input$run_test, {
-    req(rv$meta_sample, rv$abundance_sample)
+    req(rv$meta_sample, rv$frequency_sample)
 
     test_type_run <- input$test_type
     p_adj_method_run <- input$p_adj_method
@@ -4911,9 +4925,9 @@ server <- function(input, output, session) {
     test_entity_run <- input$test_entity
     pairing_var_run <- input$pairing_var
 
-    abund0 <- rv$abundance_sample
+    abund0 <- rv$frequency_sample
     if (is.null(abund0)) {
-      showNotification("No abundance matrix available.", type = "error")
+      showNotification("No frequency matrix available.", type = "error")
       return(list(df = NULL, adj_col = NULL))
     }
 
@@ -5526,11 +5540,11 @@ server <- function(input, output, session) {
   })
 
   cat_plot_data <- eventReactive(input$generate_cat_plots, {
-    req(rv$meta_sample, rv$abundance_sample)
+    req(rv$meta_sample, rv$frequency_sample)
 
-    abund0 <- rv$abundance_sample
+    abund0 <- rv$frequency_sample
     if (is.null(abund0)) {
-      showNotification("No abundance matrix available.", type = "error")
+      showNotification("No frequency matrix available.", type = "error")
       return(NULL)
     }
 
@@ -6380,11 +6394,11 @@ server <- function(input, output, session) {
   )
 
   cont_plot_data <- eventReactive(input$generate_cont_plots, {
-    req(rv$meta_sample, rv$abundance_sample)
+    req(rv$meta_sample, rv$frequency_sample)
 
-    abund0 <- rv$abundance_sample
+    abund0 <- rv$frequency_sample
     if (is.null(abund0)) {
-      showNotification("No abundance matrix available.", type = "error")
+      showNotification("No frequency matrix available.", type = "error")
       return(NULL)
     }
 
@@ -6527,7 +6541,7 @@ server <- function(input, output, session) {
       if (!transpose_flag) {
         aes_pt <- ggplot2::aes(x = freq, y = .data[[cont_var]])
         smooth_aes <- ggplot2::aes(x = freq, y = .data[[cont_var]])
-        x_lab <- "Abundance"
+        x_lab <- "Frequency (%)"
         y_lab <- cont_var
         p_df <- p_df %>%
           dplyr::mutate(
@@ -6538,7 +6552,7 @@ server <- function(input, output, session) {
         aes_pt <- ggplot2::aes(x = .data[[cont_var]], y = freq)
         smooth_aes <- ggplot2::aes(x = .data[[cont_var]], y = freq)
         x_lab <- cont_var
-        y_lab <- "Abundance"
+        y_lab <- "Frequency (%)"
         p_df <- p_df %>%
           dplyr::mutate(
             x = tapply(plot_df[[cont_var]], plot_df$entity, function(v) mean(range(v, na.rm = TRUE)))[entity],
@@ -6651,21 +6665,21 @@ server <- function(input, output, session) {
     ignoreInit = TRUE
   )
 
-  observeEvent(rv$clusters$abundance, {
-    cluster_names <- colnames(rv$clusters$abundance)
+  observeEvent(rv$clusters$frequency, {
+    cluster_names <- colnames(rv$clusters$frequency)
     updatePickerInput(session, "fs_cluster_subset", choices = cluster_names)
   })
 
   run_fs <- function() {
-    req(rv$meta_sample, rv$abundance_sample, input$fs_outcome, input$fs_predictors)
+    req(rv$meta_sample, rv$frequency_sample, input$fs_outcome, input$fs_predictors)
 
     # Get entity type and aggregate if needed
     entity_type <- input$fs_entity %||% "Clusters"
-    abund0 <- rv$abundance_sample
+    abund0 <- rv$frequency_sample
     
     if (entity_type == "Celltypes" && !is.null(rv$cluster_map)) {
       abund0 <- tryCatch({
-        aggregate_to_celltypes(abund0, rv$cluster_map, type = "abundance")
+        aggregate_to_celltypes(abund0, rv$cluster_map, type = "frequency")
       }, error = function(e) {
         showNotification(paste("Error aggregating to celltypes:", e$message), type = "error")
         return(NULL)
@@ -7406,9 +7420,9 @@ server <- function(input, output, session) {
     contentType = "application/zip"
   )
 
-  observeEvent(list(rv$meta_sample, rv$abundance_sample),
+  observeEvent(list(rv$meta_sample, rv$frequency_sample),
     {
-      req(rv$meta_sample, rv$abundance_sample)
+      req(rv$meta_sample, rv$frequency_sample)
 
       meta_cols <- colnames(rv$meta_sample)
       categorical_choices <- sort(meta_cols[sapply(rv$meta_sample, function(x) is.factor(x) || is.character(x))])
@@ -7424,7 +7438,7 @@ server <- function(input, output, session) {
       updatePickerInput(session, "lm_outcome", choices = categorical_choices, selected = NULL)
       updatePickerInput(session, "lm_predictors", choices = predictor_choices, selected = NULL)
       updatePickerInput(session, "lm_cluster_subset",
-        choices = colnames(rv$abundance_sample),
+        choices = colnames(rv$frequency_sample),
         selected = character(0)
       )
     },
@@ -7432,9 +7446,9 @@ server <- function(input, output, session) {
   )
 
   # Initialize Regression dropdowns
-  observeEvent(list(rv$meta_sample, rv$abundance_sample),
+  observeEvent(list(rv$meta_sample, rv$frequency_sample),
     {
-      req(rv$meta_sample, rv$abundance_sample)
+      req(rv$meta_sample, rv$frequency_sample)
 
       meta_cols <- colnames(rv$meta_sample)
       continuous_choices <- sort(meta_cols[sapply(rv$meta_sample, is.numeric)])
@@ -7450,7 +7464,7 @@ server <- function(input, output, session) {
       updatePickerInput(session, "reg_outcome", choices = continuous_choices, selected = NULL)
       updatePickerInput(session, "reg_predictors", choices = predictor_choices, selected = NULL)
       updatePickerInput(session, "reg_cluster_subset",
-        choices = colnames(rv$abundance_sample),
+        choices = colnames(rv$frequency_sample),
         selected = character(0)
       )
     },
@@ -7485,17 +7499,17 @@ server <- function(input, output, session) {
   })
 
   run_lm <- function() {
-    req(rv$meta_sample, rv$abundance_sample, input$lm_outcome, input$lm_predictors)
+    req(rv$meta_sample, rv$frequency_sample, input$lm_outcome, input$lm_predictors)
 
     meta_patient <- rv$meta_sample
     
     # Get entity type and aggregate if needed
     entity_type <- input$lm_entity %||% "Clusters"
-    abund0 <- rv$abundance_sample
+    abund0 <- rv$frequency_sample
     
     if (entity_type == "Celltypes" && !is.null(rv$cluster_map)) {
       abund0 <- tryCatch({
-        aggregate_to_celltypes(abund0, rv$cluster_map, type = "abundance")
+        aggregate_to_celltypes(abund0, rv$cluster_map, type = "frequency")
       }, error = function(e) {
         showNotification(paste("Error aggregating to celltypes:", e$message), type = "error")
         return(NULL)
@@ -7693,7 +7707,7 @@ server <- function(input, output, session) {
         split_info = split_info,
         run_model_type = input$lm_model_type,
         run_validation = validation,
-        run_outcome    = input$lm_outcome,
+        run_outcome = input$lm_outcome,
         details = list(
           samples_before = n_before,
           samples_after = n_after,
@@ -7772,7 +7786,7 @@ server <- function(input, output, session) {
       model = model, preds = preds, null_acc = null_acc,
       run_model_type = input$lm_model_type,
       run_validation = validation,
-      run_outcome    = input$lm_outcome,
+      run_outcome = input$lm_outcome,
       details = list(
         samples_before = n_before,
         samples_after = n_after,
@@ -8479,17 +8493,17 @@ server <- function(input, output, session) {
   # ========== REGRESSION TAB LOGIC ==========
 
   run_reg <- function() {
-    req(rv$meta_sample, rv$abundance_sample, input$reg_outcome, input$reg_predictors)
+    req(rv$meta_sample, rv$frequency_sample, input$reg_outcome, input$reg_predictors)
 
     meta_patient <- rv$meta_sample
     
     # Get entity type and aggregate if needed
     entity_type <- input$reg_entity %||% "Clusters"
-    abund0 <- rv$abundance_sample
+    abund0 <- rv$frequency_sample
     
     if (entity_type == "Celltypes" && !is.null(rv$cluster_map)) {
       abund0 <- tryCatch({
-        aggregate_to_celltypes(abund0, rv$cluster_map, type = "abundance")
+        aggregate_to_celltypes(abund0, rv$cluster_map, type = "frequency")
       }, error = function(e) {
         showNotification(paste("Error aggregating to celltypes:", e$message), type = "error")
         return(NULL)
@@ -8735,7 +8749,7 @@ server <- function(input, output, session) {
         split_info = split_info,
         run_model_type = input$reg_model_type,
         run_validation = validation,
-        run_outcome    = input$reg_outcome,
+        run_outcome = input$reg_outcome,
         details = list(
           samples_before = n_before,
           samples_after = n_after,
@@ -8873,7 +8887,7 @@ server <- function(input, output, session) {
       model = model, preds = preds_tbl, null_rmse = null_rmse,
       run_model_type = input$reg_model_type,
       run_validation = validation,
-      run_outcome    = input$reg_outcome,
+      run_outcome = input$reg_outcome,
       details = list(
         samples_before = n_before,
         samples_after = n_after,
@@ -10645,9 +10659,9 @@ server <- function(input, output, session) {
   # ========== TIME TO EVENT ANALYSIS TAB LOGIC ==========
 
   # Initialize Time to Event Analysis dropdowns
-  observeEvent(list(rv$meta_sample, rv$abundance_sample),
+  observeEvent(list(rv$meta_sample, rv$frequency_sample),
     {
-      req(rv$meta_sample, rv$abundance_sample)
+      req(rv$meta_sample)
 
       meta_cols <- colnames(rv$meta_sample)
       continuous_choices <- sort(meta_cols[sapply(rv$meta_sample, is.numeric)])
@@ -10662,10 +10676,12 @@ server <- function(input, output, session) {
 
       updatePickerInput(session, "surv_outcome", choices = continuous_choices, selected = NULL)
       updatePickerInput(session, "surv_predictors", choices = predictor_choices, selected = NULL)
-      updatePickerInput(session, "surv_cluster_subset",
-        choices = colnames(rv$abundance_sample),
-        selected = character(0)  # No selection = use all clusters
-      )
+      if (!is.null(rv$frequency_sample)) {
+        updatePickerInput(session, "surv_cluster_subset",
+          choices = colnames(rv$frequency_sample),
+          selected = character(0)  # No selection = use all clusters
+        )
+      }
       # Event status controls — restrict to binary (≤2 unique non-NA values) columns only.
       # Purely continuous double columns are excluded unless they are strict 0/1 flags.
       viable_event_cols <- setdiff(meta_cols, c("patient_ID", "source", "run_date", "cluster"))
@@ -10821,7 +10837,7 @@ server <- function(input, output, session) {
 
   # Main time to event analysis function
   run_surv <- function() {
-    req(rv$meta_sample, rv$abundance_sample, input$surv_outcome, input$surv_predictors)
+    req(rv$meta_sample, rv$frequency_sample, input$surv_outcome, input$surv_predictors)
     
     # Get analysis mode
     analysis_mode <- input$surv_analysis_mode %||% "multivariate"
@@ -10835,17 +10851,17 @@ server <- function(input, output, session) {
   
   # Multivariate analysis (original behavior)
   run_surv_multivariate <- function() {
-    req(rv$meta_sample, rv$abundance_sample, input$surv_outcome, input$surv_predictors)
+    req(rv$meta_sample, rv$frequency_sample, input$surv_outcome, input$surv_predictors)
 
     meta_patient <- rv$meta_sample
     
     # Get entity type and aggregate if needed
     entity_type <- input$surv_entity %||% "Clusters"
-    abund_original <- rv$abundance_sample
+    abund_original <- rv$frequency_sample
     
     if (entity_type == "Celltypes" && !is.null(rv$cluster_map)) {
       abund_original <- tryCatch({
-        aggregate_to_celltypes(abund_original, rv$cluster_map, type = "abundance")
+        aggregate_to_celltypes(abund_original, rv$cluster_map, type = "frequency")
       }, error = function(e) {
         stop(paste("Error aggregating to celltypes:", e$message))
       })
@@ -10950,14 +10966,14 @@ server <- function(input, output, session) {
     # Attach outcome and event status
     design_df$time <- outcome
     design_df$status <- build_event_status_vec(
-      patient_ids   = design_df$patient_ID,
-      meta_patient  = meta_patient,
+      patient_ids = design_df$patient_ID,
+      meta_patient = meta_patient,
       update_status = isTRUE(input$surv_update_event_status),
-      event_source  = input$surv_event_source  %||% "metadata",
-      event_col     = input$surv_event_col,
-      event_level   = input$surv_event_level,
-      manual_ids    = input$surv_manual_ids,
-      manual_mark   = input$surv_manual_mark   %||% "selected_censored"
+      event_source = input$surv_event_source %||% "metadata",
+      event_col = input$surv_event_col,
+      event_level = input$surv_event_level,
+      manual_ids = input$surv_manual_ids,
+      manual_mark = input$surv_manual_mark %||% "selected_censored"
     )
 
     # Warn if the event status column contained NAs (they were silently treated as censored)
@@ -11256,17 +11272,17 @@ server <- function(input, output, session) {
   
   # Univariate analysis - run separate model for each predictor
   run_surv_univariate <- function() {
-    req(rv$meta_sample, rv$abundance_sample, input$surv_outcome, input$surv_predictors)
+    req(rv$meta_sample, rv$frequency_sample, input$surv_outcome, input$surv_predictors)
 
     meta_patient <- rv$meta_sample
     
     # Get entity type and aggregate if needed
     entity_type <- input$surv_entity %||% "Clusters"
-    abund_original <- rv$abundance_sample
+    abund_original <- rv$frequency_sample
     
     if (entity_type == "Celltypes" && !is.null(rv$cluster_map)) {
       abund_original <- tryCatch({
-        aggregate_to_celltypes(abund_original, rv$cluster_map, type = "abundance")
+        aggregate_to_celltypes(abund_original, rv$cluster_map, type = "frequency")
       }, error = function(e) {
         stop(paste("Error aggregating to celltypes:", e$message))
       })
@@ -11366,14 +11382,14 @@ server <- function(input, output, session) {
     # Attach outcome and event status
     design_df$time <- outcome
     design_df$status <- build_event_status_vec(
-      patient_ids   = design_df$patient_ID,
-      meta_patient  = meta_patient,
+      patient_ids = design_df$patient_ID,
+      meta_patient = meta_patient,
       update_status = isTRUE(input$surv_update_event_status),
-      event_source  = input$surv_event_source  %||% "metadata",
-      event_col     = input$surv_event_col,
-      event_level   = input$surv_event_level,
-      manual_ids    = input$surv_manual_ids,
-      manual_mark   = input$surv_manual_mark   %||% "selected_censored"
+      event_source = input$surv_event_source %||% "metadata",
+      event_col = input$surv_event_col,
+      event_level = input$surv_event_level,
+      manual_ids = input$surv_manual_ids,
+      manual_mark = input$surv_manual_mark %||% "selected_censored"
     )
 
     # Warn if the event status column contained NAs (they were silently treated as censored)
@@ -11674,7 +11690,14 @@ server <- function(input, output, session) {
       plot_args$legend.labs <- c("Low Risk", "High Risk")
     }
     
-    do.call(ggsurvplot, plot_args)$plot
+    withCallingHandlers(
+      do.call(ggsurvplot, plot_args)$plot,
+      warning = function(w) {
+        if (grepl("size.*aesthetic.*lines.*deprecated|linewidth", conditionMessage(w), ignore.case = TRUE)) {
+          invokeRestart("muffleWarning")
+        }
+      }
+    )
   })
 
   # Model summary
@@ -12444,6 +12467,467 @@ server <- function(input, output, session) {
     },
     contentType = "application/zip"
   )
+
+  # ========== SESSION STATE SAVE / RESTORE ==========
+
+  output$download_session_state <- downloadHandler(
+    filename = function() {
+      paste0("fcview_session_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".json")
+    },
+    content = function(file) {
+      state <- list(
+        version = "1.0",
+        features = list(
+          features_dropdown = isolate(input$features_dropdown) %||% character(0),
+          mini_hide_states = isolate(rv$mini_hide_states),
+          type_coercions = isolate(rv$type_coercions)
+        ),
+        pairing = list(
+          pairing_var = isolate(input$pairing_var) %||% ""
+        ),
+        subsetting = list(
+          enable_subsetting = isTRUE(isolate(input$enable_subsetting)),
+          subset_logic = isolate(input$subset_logic) %||% "intersection",
+          trim_incomplete_pairs = isolate(input$trim_incomplete_pairs) %||% character(0),
+          subset_rules = isolate(rv$subset_rules)
+        ),
+        annotations = list(
+          celltype_annotations = isolate(rv$celltype_annotations)
+        ),
+        collections = list(
+          cluster_collections = isolate(rv$cluster_collections)
+        ),
+        sccomp = list(
+          entity = isolate(input$sccomp_entity) %||% "Clusters",
+          formula_mode = isolate(input$sccomp_formula_mode) %||% "simple",
+          group_var = isolate(input$sccomp_group_var) %||% "",
+          formula_vars = isolate(input$sccomp_formula_vars) %||% character(0),
+          simple_ref_levels = isolate(input$sccomp_simple_ref_levels) %||% "",
+          custom_formula = isolate(input$sccomp_custom_formula) %||% "~ condition",
+          custom_reference_levels = isolate(input$sccomp_custom_reference_levels) %||% "",
+          inference_method = isolate(input$sccomp_inference_method) %||% "pathfinder",
+          cores = isolate(input$sccomp_cores) %||% 2L,
+          logit_fold_change = isolate(input$sccomp_logit_fold_change) %||% 0.1,
+          interactions = isTRUE(isolate(input$sccomp_interactions)),
+          collections = isolate(input$sccomp_collections) %||% character(0)
+        ),
+        annotation = list(
+          cluster_rows    = isTRUE(isolate(input$cluster_rows)),
+          cluster_columns = isTRUE(isolate(input$cluster_columns)),
+          heatmap_theme   = isolate(input$heatmap_theme) %||% "viridis"
+        ),
+        testing = list(
+          test_entity      = isolate(input$test_entity) %||% "Clusters",
+          group_var        = isolate(input$group_var) %||% "",
+          cont_var         = isolate(input$cont_var) %||% "",
+          test_type        = isolate(input$test_type) %||% "Pairwise Wilcoxon",
+          test_collections = isolate(input$test_collections) %||% character(0),
+          p_adj_method     = isolate(input$p_adj_method) %||% "BH"
+        ),
+        categorical = list(
+          cat_entity            = isolate(input$cat_entity) %||% "Clusters",
+          cat_group_var         = isolate(input$cat_group_var) %||% "",
+          cat_test_type         = isolate(input$cat_test_type) %||% "Pairwise Wilcoxon",
+          cat_collections       = isolate(input$cat_collections) %||% character(0),
+          cat_p_adj_method      = isolate(input$cat_p_adj_method) %||% "BH",
+          cat_use_adj_p         = isTRUE(isolate(input$cat_use_adj_p)),
+          cat_max_facets        = isolate(input$cat_max_facets) %||% 4L,
+          cat_plot_type         = isolate(input$cat_plot_type) %||% "box",
+          cat_show_xaxis_labels = isTRUE(isolate(input$cat_show_xaxis_labels))
+        ),
+        continuous = list(
+          cont_entity       = isolate(input$cont_entity) %||% "Clusters",
+          cont_group_var    = isolate(input$cont_group_var) %||% "",
+          cont_collections  = isolate(input$cont_collections) %||% character(0),
+          cont_p_adj_method = isolate(input$cont_p_adj_method) %||% "BH",
+          cont_use_adj_p    = isTRUE(isolate(input$cont_use_adj_p)),
+          cont_transpose    = isTRUE(isolate(input$cont_transpose)),
+          cont_max_facets   = isolate(input$cont_max_facets) %||% 4L
+        ),
+        feature_selection = list(
+          fs_entity      = isolate(input$fs_entity) %||% "Clusters",
+          fs_collections = isolate(input$fs_collections) %||% character(0),
+          fs_method      = isolate(input$fs_method) %||% "Ridge Regression",
+          fs_outcome     = isolate(input$fs_outcome) %||% "",
+          fs_predictors  = isolate(input$fs_predictors) %||% character(0),
+          fs_alpha       = isolate(input$fs_alpha) %||% 0.5
+        ),
+        classification = list(
+          lm_entity               = isolate(input$lm_entity) %||% "Clusters",
+          lm_collections          = isolate(input$lm_collections) %||% character(0),
+          lm_outcome              = isolate(input$lm_outcome) %||% "",
+          lm_predictors           = isolate(input$lm_predictors) %||% character(0),
+          lm_model_type           = isolate(input$lm_model_type) %||% "Logistic Regression",
+          lm_use_regularization   = isTRUE(isolate(input$lm_use_regularization)),
+          lm_penalty_type         = isolate(input$lm_penalty_type) %||% "lasso",
+          lm_regularization_alpha = isolate(input$lm_regularization_alpha) %||% 0.5,
+          lm_alpha                = isolate(input$lm_alpha) %||% 0.5,
+          lm_validation           = isolate(input$lm_validation) %||% "Train/Test split",
+          lm_train_frac           = isolate(input$lm_train_frac) %||% 0.7,
+          lm_k                    = isolate(input$lm_k) %||% 5L
+        ),
+        regression = list(
+          reg_entity               = isolate(input$reg_entity) %||% "Clusters",
+          reg_collections          = isolate(input$reg_collections) %||% character(0),
+          reg_outcome              = isolate(input$reg_outcome) %||% "",
+          reg_predictors           = isolate(input$reg_predictors) %||% character(0),
+          reg_model_type           = isolate(input$reg_model_type) %||% "Linear Regression",
+          reg_use_regularization   = isTRUE(isolate(input$reg_use_regularization)),
+          reg_penalty_type         = isolate(input$reg_penalty_type) %||% "lasso",
+          reg_regularization_alpha = isolate(input$reg_regularization_alpha) %||% 0.5,
+          reg_alpha                = isolate(input$reg_alpha) %||% 0.5,
+          reg_validation           = isolate(input$reg_validation) %||% "Train/Test split",
+          reg_train_frac           = isolate(input$reg_train_frac) %||% 0.7,
+          reg_k                    = isolate(input$reg_k) %||% 5L
+        ),
+        time_to_event = list(
+          surv_entity              = isolate(input$surv_entity) %||% "Clusters",
+          surv_collections         = isolate(input$surv_collections) %||% character(0),
+          surv_outcome             = isolate(input$surv_outcome) %||% "",
+          surv_update_event_status = isTRUE(isolate(input$surv_update_event_status)),
+          surv_event_source        = isolate(input$surv_event_source) %||% "metadata",
+          surv_event_col           = isolate(input$surv_event_col) %||% "",
+          surv_event_level         = isolate(input$surv_event_level) %||% "",
+          surv_manual_ids          = isolate(input$surv_manual_ids) %||% character(0),
+          surv_manual_mark         = isolate(input$surv_manual_mark) %||% "selected_censored",
+          surv_analysis_mode       = isolate(input$surv_analysis_mode) %||% "multivariate",
+          surv_use_regularization  = isTRUE(isolate(input$surv_use_regularization)),
+          surv_penalty_type        = isolate(input$surv_penalty_type) %||% "lasso",
+          surv_alpha               = isolate(input$surv_alpha) %||% 0.5,
+          surv_predictors          = isolate(input$surv_predictors) %||% character(0),
+          surv_split_method        = isolate(input$surv_split_method) %||% "median",
+          surv_show_ci             = isTRUE(isolate(input$surv_show_ci)),
+          surv_color_low_risk      = isolate(input$surv_color_low_risk) %||% "#87CEEB",
+          surv_color_high_risk     = isolate(input$surv_color_high_risk) %||% "#FF69B4"
+        )
+      )
+      jsonlite::write_json(state, file, auto_unbox = TRUE, pretty = TRUE, null = "null")
+    },
+    contentType = "application/json"
+  )
+
+  observeEvent(input$upload_session_state, {
+    req(rv$data_ready, input$upload_session_state)
+    fp <- input$upload_session_state$datapath
+
+    tryCatch({
+      state <- jsonlite::read_json(fp, simplifyVector = FALSE)
+
+      # === Features ===
+      feat <- state$features %||% list()
+
+      hides <- feat$mini_hide_states %||% list()
+      for (nm in names(hides)) {
+        rv$mini_hide_states[[nm]] <- isTRUE(hides[[nm]])
+      }
+
+      coercs <- feat$type_coercions %||% list()
+      for (nm in names(coercs)) {
+        rv$type_coercions[[nm]] <- as.character(coercs[[nm]] %||% "")
+      }
+
+      # Update features_dropdown last — triggers mini UI re-render using restored rv states above
+      saved_feats <- unlist(feat$features_dropdown %||% list())
+      if (length(saved_feats) > 0) {
+        valid_feats <- intersect(saved_feats, rv$all_meta_cols)
+        if (length(valid_feats) > 0) updatePickerInput(session, "features_dropdown", selected = valid_feats)
+      }
+
+      # === Pairing ===
+      pair <- state$pairing %||% list()
+      pvar <- as.character(pair$pairing_var %||% "")
+      if (nzchar(pvar)) updatePickerInput(session, "pairing_var", selected = pvar)
+
+      # === Subsetting ===
+      sub <- state$subsetting %||% list()
+
+      en_sub <- isTRUE(sub$enable_subsetting)
+      updateCheckboxInput(session, "enable_subsetting", value = en_sub)
+      rv$subsetting_enabled <- en_sub
+
+      sub_logic <- as.character(sub$subset_logic %||% "intersection")
+      updateRadioButtons(session, "subset_logic", selected = sub_logic)
+
+      trim_pairs <- unlist(sub$trim_incomplete_pairs %||% list())
+      if (length(trim_pairs) > 0) updatePickerInput(session, "trim_incomplete_pairs", selected = trim_pairs)
+
+      saved_rules <- sub$subset_rules %||% list()
+      n_rules <- length(saved_rules)
+      if (n_rules > 0) {
+        restored_rules <- lapply(saved_rules, function(r) {
+          out <- list(
+            column = as.character(r$column %||% ""),
+            type = as.character(r$type %||% "categorical"),
+            operator = as.character(r$operator %||% ""),
+            threshold = if (!is.null(r$threshold)) as.numeric(r$threshold) else NULL,
+            threshold_min = if (!is.null(r$threshold_min)) as.numeric(r$threshold_min) else NULL,
+            threshold_max = if (!is.null(r$threshold_max)) as.numeric(r$threshold_max) else NULL,
+            values = if (!is.null(r$values)) unlist(r$values) else NULL,
+            exclude_missing = isTRUE(r$exclude_missing)
+          )
+          out[!vapply(out, is.null, logical(1))]
+        })
+        rv$subset_rules <- restored_rules
+
+        # Clear any existing rule DOM from a prior state load
+        removeUI(selector = "[id^='rule_container_']", multiple = TRUE, immediate = TRUE)
+        subset_rule_ids(integer(0))
+
+        # Insert each rule as an independent DOM node with its own scoped observers.
+        # lapply (not a for loop) is used here to ensure each iteration creates a
+        # fresh execution environment, so saved_r is correctly bound per-rule.
+        # A for loop in R reuses the same environment across iterations, causing all
+        # setup_rule() closures to capture the last iteration's saved_r value.
+        lapply(seq_len(n_rules), function(i) {
+          saved_r  <- restored_rules[[i]]
+          init_col <- as.character(saved_r$column %||% colnames(rv$meta_sample_original)[1])
+          if (!nzchar(init_col) || !(init_col %in% colnames(rv$meta_sample_original))) {
+            init_col <- colnames(rv$meta_sample_original)[1]
+          }
+          insertUI(
+            selector = "#subsetting_rules_wrapper",
+            where    = "beforeEnd",
+            ui       = make_rule_ui(i, colnames(rv$meta_sample_original), initial_col = init_col),
+            immediate = TRUE
+          )
+          subset_rule_ids(c(subset_rule_ids(), i))
+          setup_rule(i, saved_rule = saved_r)
+        })
+        subset_next_id(n_rules + 1L)
+      }
+
+      # === Annotations ===
+      ann <- state$annotations %||% list()
+      saved_anns <- ann$celltype_annotations %||% list()
+      if (length(saved_anns) > 0) {
+        # Normalize annotations: read_json(simplifyVector = FALSE) returns each
+        # annotation's `clusters` array as a plain list. Unlist + coerce to
+        # character so pickerInput selected= and intersect() work correctly.
+        # Also advance the counter so "Add Cell Type" won't collide with restored IDs.
+        saved_anns <- lapply(saved_anns, function(ann) {
+          ann$id       <- as.integer(ann$id %||% 0L)
+          ann$clusters <- as.character(unlist(ann$clusters %||% list()))
+          ann
+        })
+        max_ann_id <- max(vapply(saved_anns, function(a) as.integer(a$id %||% 0L), integer(1)))
+        celltype_id_counter(max_ann_id)
+        rv$celltype_annotations         <- saved_anns
+        rv$celltype_annotations_working <- saved_anns
+      }
+
+      # === Collections ===
+      coll <- state$collections %||% list()
+      saved_colls <- coll$cluster_collections %||% list()
+      if (length(saved_colls) > 0) {
+        # Normalize each collection after JSON parse:
+        # - read_json(simplifyVector = FALSE) returns arrays as plain lists, so
+        #   `items` comes back as list("T cells","NK cells") rather than a
+        #   character vector. pickerInput's `selected` and intersect() both
+        #   require a proper character vector, so we unlist + as.character here.
+        # - Coerce id to integer for consistency.
+        saved_colls <- lapply(saved_colls, function(col) {
+          col$id    <- as.integer(col$id %||% 0L)
+          col$items <- as.character(unlist(col$items %||% list()))
+          col
+        })
+        # Advance the counter so new collections don't collide with restored IDs
+        max_id <- max(vapply(saved_colls, function(col) as.integer(col$id %||% 0L), integer(1)))
+        collection_id_counter(max_id)
+        rv$cluster_collections        <- saved_colls
+        rv$cluster_collections_working <- saved_colls
+        rv$cluster_collections_cached  <- saved_colls
+      }
+
+      # === sccomp ===
+      sc <- state$sccomp %||% list()
+      if (!is.null(sc$entity)) updatePickerInput(session, "sccomp_entity", selected = as.character(sc$entity))
+      if (!is.null(sc$formula_mode)) updateRadioButtons(session, "sccomp_formula_mode", selected = as.character(sc$formula_mode))
+      sc_gv <- as.character(sc$group_var %||% "")
+      if (nzchar(sc_gv)) updatePickerInput(session, "sccomp_group_var", selected = sc_gv)
+      sc_fv <- unlist(sc$formula_vars %||% list())
+      if (length(sc_fv) > 0) updatePickerInput(session, "sccomp_formula_vars", selected = sc_fv)
+      if (!is.null(sc$simple_ref_levels)) updateTextInput(session, "sccomp_simple_ref_levels", value = as.character(sc$simple_ref_levels %||% ""))
+      if (!is.null(sc$custom_formula)) updateTextInput(session, "sccomp_custom_formula", value = as.character(sc$custom_formula %||% "~ condition"))
+      if (!is.null(sc$custom_reference_levels)) updateTextInput(session, "sccomp_custom_reference_levels", value = as.character(sc$custom_reference_levels %||% ""))
+      if (!is.null(sc$inference_method)) updateSelectInput(session, "sccomp_inference_method", selected = as.character(sc$inference_method))
+      if (!is.null(sc$cores)) updateSliderInput(session, "sccomp_cores", value = as.numeric(sc$cores))
+      if (!is.null(sc$logit_fold_change)) updateSliderInput(session, "sccomp_logit_fold_change", value = as.numeric(sc$logit_fold_change))
+      if (!is.null(sc$interactions)) updateCheckboxInput(session, "sccomp_interactions", value = isTRUE(sc$interactions))
+
+      # === Annotation tab ===
+      ann_s <- state$annotation %||% list()
+      if (!is.null(ann_s$cluster_rows))    updateCheckboxInput(session, "cluster_rows",    value = isTRUE(ann_s$cluster_rows))
+      if (!is.null(ann_s$cluster_columns)) updateCheckboxInput(session, "cluster_columns", value = isTRUE(ann_s$cluster_columns))
+      if (!is.null(ann_s$heatmap_theme))   updateSelectInput(session,   "heatmap_theme",   selected = as.character(ann_s$heatmap_theme))
+
+      # === Testing tab ===
+      tst <- state$testing %||% list()
+      if (!is.null(tst$test_entity)) updatePickerInput(session, "test_entity", selected = as.character(tst$test_entity))
+      tst_gv <- as.character(tst$group_var %||% "")
+      if (nzchar(tst_gv)) updatePickerInput(session, "group_var", selected = tst_gv)
+      tst_cv <- as.character(tst$cont_var %||% "")
+      if (nzchar(tst_cv)) updatePickerInput(session, "cont_var", selected = tst_cv)
+      if (!is.null(tst$p_adj_method)) updateSelectInput(session, "p_adj_method", selected = as.character(tst$p_adj_method))
+
+      # === Categorical tab ===
+      cat_s <- state$categorical %||% list()
+      if (!is.null(cat_s$cat_entity))    updatePickerInput(session, "cat_entity",    selected = as.character(cat_s$cat_entity))
+      cat_gv <- as.character(cat_s$cat_group_var %||% "")
+      if (nzchar(cat_gv)) updatePickerInput(session, "cat_group_var", selected = cat_gv)
+      if (!is.null(cat_s$cat_p_adj_method))      updateSelectInput(session,   "cat_p_adj_method",      selected = as.character(cat_s$cat_p_adj_method))
+      if (!is.null(cat_s$cat_use_adj_p))         updateCheckboxInput(session, "cat_use_adj_p",         value    = isTRUE(cat_s$cat_use_adj_p))
+      if (!is.null(cat_s$cat_max_facets))        updateSelectInput(session,   "cat_max_facets",        selected = as.character(cat_s$cat_max_facets))
+      if (!is.null(cat_s$cat_plot_type))         updateSelectInput(session,   "cat_plot_type",         selected = as.character(cat_s$cat_plot_type))
+      if (!is.null(cat_s$cat_show_xaxis_labels)) updateCheckboxInput(session, "cat_show_xaxis_labels", value    = isTRUE(cat_s$cat_show_xaxis_labels))
+
+      # === Continuous tab ===
+      cont_s <- state$continuous %||% list()
+      if (!is.null(cont_s$cont_entity)) updatePickerInput(session, "cont_entity", selected = as.character(cont_s$cont_entity))
+      cont_gv <- as.character(cont_s$cont_group_var %||% "")
+      if (nzchar(cont_gv)) updatePickerInput(session, "cont_group_var", selected = cont_gv)
+      if (!is.null(cont_s$cont_p_adj_method)) updateSelectInput(session,   "cont_p_adj_method", selected = as.character(cont_s$cont_p_adj_method))
+      if (!is.null(cont_s$cont_use_adj_p))    updateCheckboxInput(session, "cont_use_adj_p",    value    = isTRUE(cont_s$cont_use_adj_p))
+      if (!is.null(cont_s$cont_transpose))    updateCheckboxInput(session, "cont_transpose",    value    = isTRUE(cont_s$cont_transpose))
+      if (!is.null(cont_s$cont_max_facets))   updateSelectInput(session,   "cont_max_facets",   selected = as.character(cont_s$cont_max_facets))
+
+      # === Feature Selection tab ===
+      fs_s <- state$feature_selection %||% list()
+      if (!is.null(fs_s$fs_entity)) updatePickerInput(session, "fs_entity", selected = as.character(fs_s$fs_entity))
+      if (!is.null(fs_s$fs_method)) updatePickerInput(session, "fs_method", selected = as.character(fs_s$fs_method))
+      fs_oc <- as.character(fs_s$fs_outcome %||% "")
+      if (nzchar(fs_oc)) updatePickerInput(session, "fs_outcome", selected = fs_oc)
+      fs_pr <- as.character(unlist(fs_s$fs_predictors %||% list()))
+      if (length(fs_pr) > 0) updatePickerInput(session, "fs_predictors", selected = fs_pr)
+      if (!is.null(fs_s$fs_alpha)) updateSliderInput(session, "fs_alpha", value = as.numeric(fs_s$fs_alpha))
+
+      # === Classification tab ===
+      lm_s <- state$classification %||% list()
+      if (!is.null(lm_s$lm_entity)) updatePickerInput(session, "lm_entity", selected = as.character(lm_s$lm_entity))
+      lm_oc <- as.character(lm_s$lm_outcome %||% "")
+      if (nzchar(lm_oc)) updatePickerInput(session, "lm_outcome", selected = lm_oc)
+      lm_pr <- as.character(unlist(lm_s$lm_predictors %||% list()))
+      if (length(lm_pr) > 0) updatePickerInput(session, "lm_predictors", selected = lm_pr)
+      if (!is.null(lm_s$lm_model_type))           updateRadioButtons(session,  "lm_model_type",           selected = as.character(lm_s$lm_model_type))
+      if (!is.null(lm_s$lm_use_regularization))   updateCheckboxInput(session, "lm_use_regularization",   value    = isTRUE(lm_s$lm_use_regularization))
+      if (!is.null(lm_s$lm_penalty_type))         updateSelectInput(session,   "lm_penalty_type",         selected = as.character(lm_s$lm_penalty_type))
+      if (!is.null(lm_s$lm_regularization_alpha)) updateSliderInput(session,   "lm_regularization_alpha", value    = as.numeric(lm_s$lm_regularization_alpha))
+      if (!is.null(lm_s$lm_alpha))                updateSliderInput(session,   "lm_alpha",                value    = as.numeric(lm_s$lm_alpha))
+      if (!is.null(lm_s$lm_validation))           updateRadioButtons(session,  "lm_validation",           selected = as.character(lm_s$lm_validation))
+      if (!is.null(lm_s$lm_train_frac))           updateSliderInput(session,   "lm_train_frac",           value    = as.numeric(lm_s$lm_train_frac))
+      if (!is.null(lm_s$lm_k))                    updateNumericInput(session,  "lm_k",                    value    = as.integer(lm_s$lm_k))
+
+      # === Regression tab ===
+      reg_s <- state$regression %||% list()
+      if (!is.null(reg_s$reg_entity)) updatePickerInput(session, "reg_entity", selected = as.character(reg_s$reg_entity))
+      reg_oc <- as.character(reg_s$reg_outcome %||% "")
+      if (nzchar(reg_oc)) updatePickerInput(session, "reg_outcome", selected = reg_oc)
+      reg_pr <- as.character(unlist(reg_s$reg_predictors %||% list()))
+      if (length(reg_pr) > 0) updatePickerInput(session, "reg_predictors", selected = reg_pr)
+      if (!is.null(reg_s$reg_model_type))           updateRadioButtons(session,  "reg_model_type",           selected = as.character(reg_s$reg_model_type))
+      if (!is.null(reg_s$reg_use_regularization))   updateCheckboxInput(session, "reg_use_regularization",   value    = isTRUE(reg_s$reg_use_regularization))
+      if (!is.null(reg_s$reg_penalty_type))         updateSelectInput(session,   "reg_penalty_type",         selected = as.character(reg_s$reg_penalty_type))
+      if (!is.null(reg_s$reg_regularization_alpha)) updateSliderInput(session,   "reg_regularization_alpha", value    = as.numeric(reg_s$reg_regularization_alpha))
+      if (!is.null(reg_s$reg_alpha))                updateSliderInput(session,   "reg_alpha",                value    = as.numeric(reg_s$reg_alpha))
+      if (!is.null(reg_s$reg_validation))           updateRadioButtons(session,  "reg_validation",           selected = as.character(reg_s$reg_validation))
+      if (!is.null(reg_s$reg_train_frac))           updateSliderInput(session,   "reg_train_frac",           value    = as.numeric(reg_s$reg_train_frac))
+      if (!is.null(reg_s$reg_k))                    updateNumericInput(session,  "reg_k",                    value    = as.integer(reg_s$reg_k))
+
+      # === Time to Event tab ===
+      tte <- state$time_to_event %||% list()
+      if (!is.null(tte$surv_entity)) updatePickerInput(session, "surv_entity", selected = as.character(tte$surv_entity))
+      surv_oc <- as.character(tte$surv_outcome %||% "")
+      if (nzchar(surv_oc)) updatePickerInput(session, "surv_outcome", selected = surv_oc)
+      if (!is.null(tte$surv_update_event_status)) updateCheckboxInput(session, "surv_update_event_status", value    = isTRUE(tte$surv_update_event_status))
+      if (!is.null(tte$surv_event_source))        updateRadioButtons(session,  "surv_event_source",        selected = as.character(tte$surv_event_source))
+      surv_ec <- as.character(tte$surv_event_col %||% "")
+      if (nzchar(surv_ec)) updateSelectInput(session, "surv_event_col", selected = surv_ec)
+      surv_mi <- as.character(unlist(tte$surv_manual_ids %||% list()))
+      if (length(surv_mi) > 0) updatePickerInput(session, "surv_manual_ids", selected = surv_mi)
+      if (!is.null(tte$surv_manual_mark))        updateRadioButtons(session,  "surv_manual_mark",        selected = as.character(tte$surv_manual_mark))
+      if (!is.null(tte$surv_analysis_mode))      updateSelectInput(session,   "surv_analysis_mode",      selected = as.character(tte$surv_analysis_mode))
+      if (!is.null(tte$surv_use_regularization)) updateCheckboxInput(session, "surv_use_regularization", value    = isTRUE(tte$surv_use_regularization))
+      if (!is.null(tte$surv_penalty_type))       updateSelectInput(session,   "surv_penalty_type",       selected = as.character(tte$surv_penalty_type))
+      if (!is.null(tte$surv_alpha))              updateSliderInput(session,   "surv_alpha",              value    = as.numeric(tte$surv_alpha))
+      surv_pr <- as.character(unlist(tte$surv_predictors %||% list()))
+      if (length(surv_pr) > 0) updatePickerInput(session, "surv_predictors", selected = surv_pr)
+      if (!is.null(tte$surv_split_method)) updateSelectInput(session,   "surv_split_method", selected = as.character(tte$surv_split_method))
+      if (!is.null(tte$surv_show_ci))      updateCheckboxInput(session, "surv_show_ci",      value    = isTRUE(tte$surv_show_ci))
+      surv_cl <- as.character(tte$surv_color_low_risk  %||% "")
+      surv_ch <- as.character(tte$surv_color_high_risk %||% "")
+      if (nzchar(surv_cl)) colourpicker::updateColourInput(session, "surv_color_low_risk",  value = surv_cl)
+      if (nzchar(surv_ch)) colourpicker::updateColourInput(session, "surv_color_high_risk", value = surv_ch)
+
+      # === Deferred: renderUI-based pickers (collections + dynamic test-type radios) ===
+      # These widgets are generated by renderUI and don't exist in the DOM at the
+      # time of the immediate updates above. session$onFlushed waits for the current
+      # reactive flush to complete (which causes renderUI to execute) before updating.
+      session$onFlushed(function() {
+        # -- Collections pickers (rendered from rv$cluster_collections_cached) --
+        tst_coll <- as.character(unlist(tst$test_collections  %||% list()))
+        if (length(tst_coll)  > 0) updatePickerInput(session, "test_collections",  selected = tst_coll)
+        cat_coll <- as.character(unlist(cat_s$cat_collections  %||% list()))
+        if (length(cat_coll)  > 0) updatePickerInput(session, "cat_collections",   selected = cat_coll)
+        cont_coll <- as.character(unlist(cont_s$cont_collections %||% list()))
+        if (length(cont_coll) > 0) updatePickerInput(session, "cont_collections",  selected = cont_coll)
+        fs_coll  <- as.character(unlist(fs_s$fs_collections   %||% list()))
+        if (length(fs_coll)   > 0) updatePickerInput(session, "fs_collections",    selected = fs_coll)
+        lm_coll  <- as.character(unlist(lm_s$lm_collections   %||% list()))
+        if (length(lm_coll)   > 0) updatePickerInput(session, "lm_collections",    selected = lm_coll)
+        reg_coll <- as.character(unlist(reg_s$reg_collections  %||% list()))
+        if (length(reg_coll)  > 0) updatePickerInput(session, "reg_collections",   selected = reg_coll)
+        surv_coll <- as.character(unlist(tte$surv_collections  %||% list()))
+        if (length(surv_coll) > 0) updatePickerInput(session, "surv_collections",  selected = surv_coll)
+        sc_coll  <- as.character(unlist(sc$collections         %||% list()))
+        if (length(sc_coll)   > 0) updatePickerInput(session, "sccomp_collections", selected = sc_coll)
+        # -- test_type and cat_test_type (rendered from pairing state) --
+        tst_type <- as.character(tst$test_type     %||% "")
+        if (nzchar(tst_type)) updateRadioButtons(session, "test_type",     selected = tst_type)
+        cat_tt   <- as.character(cat_s$cat_test_type %||% "")
+        if (nzchar(cat_tt))   updateRadioButtons(session, "cat_test_type", selected = cat_tt)
+        # -- surv_event_level (rendered after surv_event_col is set; needs extra flush) --
+        surv_el <- as.character(tte$surv_event_level %||% "")
+        if (nzchar(surv_el)) {
+          session$onFlushed(function() {
+            updatePickerInput(session, "surv_event_level", selected = surv_el)
+          }, once = TRUE)
+        }
+      }, once = TRUE)
+
+      # === Modal — persists until user explicitly dismisses it ===
+      bullet_items <- tagList()
+      if (n_rules > 0) {
+        bullet_items <- tagAppendChild(bullet_items,
+          tags$li(paste0(n_rules, " subsetting rule(s) loaded \u2014 click \u201cApply Subsetting\u201d to re-filter the data."))
+        )
+      }
+      if (length(saved_anns) > 0) {
+        bullet_items <- tagAppendChild(bullet_items,
+          tags$li("Cell type annotations loaded \u2014 click \u201cApply Annotations\u201d to activate them.")
+        )
+      }
+
+      showModal(modalDialog(
+        title = tags$span(style = "font-size: 1.4em; font-weight: bold;", "\u2713 Session State Restored"),
+        tags$div(
+          style = "font-size: 1.2em; line-height: 1.8;",
+          tags$p("Your saved settings have been successfully restored, including feature visibility, type coercions, pairing variable, subsetting rules, annotations, collections, sccomp settings, and all per-tab analysis selections (Testing, Categorical, Continuous, Feature Selection, Classification, Regression, and Time to Event)."),
+          if (length(bullet_items$children) > 0) tagList(
+            tags$p(tags$strong("Action required to fully restore:")),
+            tags$ul(style = "margin-left: 1.2em;", bullet_items)
+          ),
+          tags$p(style = "color: #888; font-size: 0.9em; margin-top: 1em;",
+            "Computed results (test outputs, model results, plots) are not saved and must be re-run."
+          )
+        ),
+        footer = modalButton("Got it"),
+        easyClose = FALSE,
+        size = "m"
+      ))
+
+    }, error = function(e) {
+      showNotification(paste("Failed to restore session state:", e$message), type = "error", duration = NULL)
+    })
+  })
 }
 
 shinyApp(ui, server)

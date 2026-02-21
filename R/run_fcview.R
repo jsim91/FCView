@@ -28,7 +28,7 @@
 #'   - `data`: numeric matrix of cells × features
 #'   - `source`: character vector of sample identifiers
 #'   - `metadata`: data frame with sample-level metadata (must include `patient_ID`)
-#'   - `cluster`: list containing cluster assignments, abundance, and counts
+#'   - `cluster`: list containing cluster assignments, frequency, fraction, and counts
 #'   - `umap` or `tsne`: list with `coordinates` data frame (optional)
 #'   - `cluster_heatmap`: list with heatmap tile data
 #'

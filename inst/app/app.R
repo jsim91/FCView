@@ -358,7 +358,7 @@ EmbeddingServer <- function(id, embedding_name, coords, expr, meta_cell, cluster
         meta_val$cluster <- factor(clusters_val$assignments)
       }
 
-      numeric_markers <- colnames(expr_val)
+      numeric_markers <- unname(colnames(expr_val))
       meta_cols <- setdiff(colnames(meta_val), c(".cell"))
 
       # Ensure cluster is present and comes right after markers
@@ -532,7 +532,7 @@ EmbeddingServer <- function(id, embedding_name, coords, expr, meta_cell, cluster
         meta_val <- meta_cell()
         req(expr_val, meta_val)
 
-        numeric_markers <- colnames(expr_val)
+        numeric_markers <- unname(colnames(expr_val))
         meta_cols <- colnames(meta_val)
         
         # Include cluster and celltype in valid columns for color_by
@@ -2131,6 +2131,9 @@ server <- function(input, output, session) {
     }
 
     # Store in rv (cell-level objects preserved for UMAP/tSNE/Heatmap)
+    # Strip any names from colnames (e.g. $P1S, $P2S from FCS parameter names)
+    # to ensure marker names display correctly throughout the app
+    colnames(expr) <- unname(colnames(expr))
     rv$expr <- expr
     rv$meta_cell <- meta_cell
     rv$clusters <- clusters

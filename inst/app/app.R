@@ -62,12 +62,22 @@ resetResults <- function(resultReactive, cacheReactive = NULL) {
 }
 
 align_metadata_abundance <- function(metadata, abundance, notify = NULL) {
-  # Extract patient_ID from abundance rownames
-  patient_ids <- gsub(
-    pattern = "_[0-9]+\\-[A-Za-z]+\\-[0-9]+.*$",
-    replacement = "",
-    x = rownames(abundance)
-  )
+  # Extract patient_ID from abundance rownames.
+  # Try direct match first; only strip date suffix if rownames don't overlap with metadata patient_IDs.
+  raw_rownames  <- rownames(abundance)
+  meta_ids_ref  <- unique(metadata$patient_ID)
+  direct_rate   <- mean(raw_rownames %in% meta_ids_ref)
+
+  if (direct_rate >= 0.5) {
+    patient_ids <- raw_rownames
+  } else {
+    # Legacy: strip trailing _DD-Mon-YYYY date suffix added by fcs_calculate_abundance
+    patient_ids <- gsub(
+      pattern = "_[0-9]+\\-[A-Za-z]+\\-[0-9]+.*$",
+      replacement = "",
+      x = raw_rownames
+    )
+  }
 
   abund_df <- as.data.frame(abundance)
   abund_df$patient_ID <- patient_ids
@@ -174,6 +184,9 @@ aggregate_to_celltypes <- function(mat, cluster_map, type = "frequency") {
   if (!nrow(cm)) {
     stop("No overlapping clusters to aggregate into celltypes")
   }
+  
+  # Map clusters with no celltype assignment to "unassigned"
+  cm$celltype[is.na(cm$celltype)] <- "unassigned"
   
   # Split clusters by celltype and sum
   split_idx <- split(cm$cluster, cm$celltype)
@@ -492,9 +505,12 @@ EmbeddingServer <- function(id, embedding_name, coords, expr, meta_cell, cluster
 
       if (!is.null(cluster_map_val) &&
         all(c("cluster", "celltype") %in% names(cluster_map_val))) {
-        dd$celltype <- as.character(cluster_map_val$celltype[
+        dd$celltype <- cluster_map_val$celltype[
           match(dd$cluster, cluster_map_val$cluster)
-        ])
+        ]
+        dd$celltype <- as.character(dd$celltype)
+        # Map clusters with no celltype assignment to "unassigned"
+        dd$celltype[is.na(dd$celltype)] <- "unassigned"
       } else {
         dd$celltype <- as.character(dd$cluster)
       }
@@ -640,6 +656,7 @@ EmbeddingServer <- function(id, embedding_name, coords, expr, meta_cell, cluster
               coords_full$celltype <- as.character(cluster_map_val$celltype[
                 match(coords_full$cluster, cluster_map_val$cluster)
               ])
+              coords_full$celltype[is.na(coords_full$celltype)] <- "unassigned"
               
               label_df <- coords_full %>%
                 group_by(.data[[split_var]], celltype) %>%
@@ -720,6 +737,7 @@ EmbeddingServer <- function(id, embedding_name, coords, expr, meta_cell, cluster
               coords_full$celltype <- as.character(cluster_map_val$celltype[
                 match(coords_full$cluster, cluster_map_val$cluster)
               ])
+              coords_full$celltype[is.na(coords_full$celltype)] <- "unassigned"
               
               label_df <- coords_full %>%
                 group_by(celltype) %>%
@@ -828,6 +846,7 @@ EmbeddingServer <- function(id, embedding_name, coords, expr, meta_cell, cluster
           coords_full$celltype <- as.character(cluster_map_val$celltype[
             match(coords_full$cluster, cluster_map_val$cluster)
           ])
+          coords_full$celltype[is.na(coords_full$celltype)] <- "unassigned"
           
           # Group by celltype and calculate centroids
           label_df <- coords_full %>%
@@ -2130,6 +2149,18 @@ server <- function(input, output, session) {
       rv$meta_sample <- metadata_unique # one row per patient_ID
     }
 
+    # Propagate run_date into meta_sample so it's available as a batch variable in analysis tabs.
+    # run_date was stripped from metadata_unique before the cell-level join to avoid .x/.y suffixes;
+    # re-derive it here from meta_cell (one unique value per patient_ID).
+    if ("run_date" %in% names(meta_cell) && "patient_ID" %in% names(meta_cell)) {
+      if (!"run_date" %in% colnames(rv$meta_sample)) {
+        rd_per_sample <- meta_cell %>%
+          dplyr::group_by(patient_ID) %>%
+          dplyr::summarise(run_date = dplyr::first(run_date), .groups = "drop")
+        rv$meta_sample <- dplyr::left_join(rv$meta_sample, rd_per_sample, by = "patient_ID")
+      }
+    }
+
     # Store in rv (cell-level objects preserved for UMAP/tSNE/Heatmap)
     # Strip any names from colnames (e.g. $P1S, $P2S from FCS parameter names)
     # to ensure marker names display correctly throughout the app
@@ -2146,14 +2177,20 @@ server <- function(input, output, session) {
     
     # Initialize celltype annotations from cluster_map if available
     if (!is.null(cluster_map) && all(c("cluster", "celltype") %in% names(cluster_map))) {
-      # Exclude NA celltypes — those are clusters the user intentionally left
-      # unassigned via fcs_annotate_clusters(); they are treated as pending
-      # assignment and should not be pre-filled in the annotation UI.
       annotations <- list()
       celltype_names <- unique(stats::na.omit(cluster_map$celltype))
+      # Collect unassigned clusters and add them as a real "unassigned" celltype
+      unassigned_clusters <- cluster_map$cluster[is.na(cluster_map$celltype)]
+      if (length(unassigned_clusters) > 0) {
+        celltype_names <- c(celltype_names, "unassigned")
+      }
       for (i in seq_along(celltype_names)) {
         ct <- celltype_names[i]
-        assigned_clusters <- cluster_map$cluster[!is.na(cluster_map$celltype) & cluster_map$celltype == ct]
+        assigned_clusters <- if (ct == "unassigned") {
+          unassigned_clusters
+        } else {
+          cluster_map$cluster[!is.na(cluster_map$celltype) & cluster_map$celltype == ct]
+        }
         annotations[[as.character(i)]] <- list(
           id = i,
           name = ct,
@@ -2162,8 +2199,8 @@ server <- function(input, output, session) {
       }
       rv$celltype_annotations <- annotations
       celltype_id_counter(length(celltype_names))
-      message("Initialized celltype annotations from cluster_map: ", length(celltype_names), " cell types (",
-              sum(is.na(cluster_map$celltype)), " cluster(s) left unassigned)")
+      message("Initialized celltype annotations from cluster_map: ", length(celltype_names), " cell type(s) (",
+              length(unassigned_clusters), " cluster(s) mapped to 'unassigned')")
     } else {
       rv$celltype_annotations <- list()
       celltype_id_counter(0)
@@ -2187,16 +2224,16 @@ server <- function(input, output, session) {
 
       # For Feature Selection: allow both categorical and continuous outcomes
       fs_outcome_choices <- sort(meta_cols)
-      fs_outcome_choices <- setdiff(fs_outcome_choices, c("cluster", "patient_ID", "run_date", "source"))
+      fs_outcome_choices <- setdiff(fs_outcome_choices, c("cluster", "patient_ID", "source"))
 
       # For Classification (LM): only categorical outcomes
       categorical_choices <- sort(meta_cols[sapply(rv$meta_sample, function(x) is.factor(x) || is.character(x))])
       # Exclude cluster, patient_ID, run_date, and source from outcome choices
-      categorical_choices <- setdiff(categorical_choices, c("cluster", "patient_ID", "run_date", "source"))
+      categorical_choices <- setdiff(categorical_choices, c("cluster", "patient_ID", "source"))
 
       predictor_choices <- sort(meta_cols)
       # Exclude patient_ID, source, and run_date from predictor choices
-      predictor_choices <- setdiff(predictor_choices, c("patient_ID", "source", "run_date"))
+      predictor_choices <- setdiff(predictor_choices, c("patient_ID", "source"))
 
       updatePickerInput(session, "fs_outcome", choices = fs_outcome_choices, selected = NULL)
       updatePickerInput(session, "fs_predictors", choices = c(predictor_choices, "cluster"), selected = NULL)
@@ -3457,6 +3494,33 @@ server <- function(input, output, session) {
     rv$celltype_annotations <- new_working_state
     
     # Build cluster_map from saved annotations
+    # First pass: detect clusters assigned to more than one celltype
+    cluster_seen_in <- list() # cluster -> vector of celltype names it appears in
+    for (ann_id in names(rv$celltype_annotations)) {
+      ann <- rv$celltype_annotations[[ann_id]]
+      ct_name <- trimws(ann$name)
+      for (cl in ann$clusters) {
+        cluster_seen_in[[cl]] <- c(cluster_seen_in[[cl]], ct_name)
+      }
+    }
+    duplicate_clusters <- Filter(function(x) length(x) > 1, cluster_seen_in)
+    if (length(duplicate_clusters) > 0) {
+      dup_msg <- paste(
+        sapply(names(duplicate_clusters), function(cl) {
+          sprintf("Cluster %s (\u2192 %s)", cl, paste(duplicate_clusters[[cl]], collapse = ", "))
+        }),
+        collapse = "; "
+      )
+      showNotification(
+        paste0(
+          "Warning: ", length(duplicate_clusters), " cluster(s) assigned to multiple cell types \u2014 ",
+          "the last assignment will be used. Please review: ", dup_msg
+        ),
+        type = "warning",
+        duration = 12
+      )
+    }
+
     cluster_map_list <- list()
     for (ann_id in names(rv$celltype_annotations)) {
       ann <- rv$celltype_annotations[[ann_id]]
@@ -4307,7 +4371,7 @@ server <- function(input, output, session) {
     entity_name <- if (entity_type == "Celltypes") "celltypes" else "cluster"
     
     meta_cols <- colnames(rv$meta_sample)
-    predictor_choices <- sort(setdiff(meta_cols, c("patient_ID", "source", "run_date")))
+    predictor_choices <- sort(setdiff(meta_cols, c("patient_ID", "source")))
     predictor_choices_with_entity <- c(predictor_choices, entity_name)
     
     # Get current selection and replace cluster/celltypes
@@ -4329,7 +4393,7 @@ server <- function(input, output, session) {
     entity_name <- if (entity_type == "Celltypes") "celltypes" else "cluster"
     
     meta_cols <- colnames(rv$meta_sample)
-    predictor_choices <- sort(setdiff(meta_cols, c("patient_ID", "source", "run_date")))
+    predictor_choices <- sort(setdiff(meta_cols, c("patient_ID", "source")))
     predictor_choices_with_entity <- c(predictor_choices, entity_name)
     
     # Get current selection and replace cluster/celltypes
@@ -4351,7 +4415,7 @@ server <- function(input, output, session) {
     entity_name <- if (entity_type == "Celltypes") "celltypes" else "cluster"
     
     meta_cols <- colnames(rv$meta_sample)
-    predictor_choices <- sort(setdiff(meta_cols, c("patient_ID", "source", "run_date")))
+    predictor_choices <- sort(setdiff(meta_cols, c("patient_ID", "source")))
     predictor_choices_with_entity <- c(predictor_choices, entity_name)
     
     # Get current selection and replace cluster/celltypes
@@ -4373,7 +4437,7 @@ server <- function(input, output, session) {
     entity_name <- if (entity_type == "Celltypes") "celltypes" else "cluster"
     
     meta_cols <- colnames(rv$meta_sample)
-    predictor_choices <- sort(setdiff(meta_cols, c("patient_ID", "source", "run_date")))
+    predictor_choices <- sort(setdiff(meta_cols, c("patient_ID", "source")))
     if (!(entity_name %in% predictor_choices)) {
       predictor_choices <- c(predictor_choices, entity_name)
     }
@@ -4494,8 +4558,8 @@ server <- function(input, output, session) {
       continuous_choices <- sort(meta_cols[sapply(rv$meta_sample, is.numeric)])
 
       # Base exclusions
-      base_exclude_outcomes <- c("cluster", "patient_ID", "run_date", "source")
-      base_exclude_predictors <- c("patient_ID", "source", "run_date")
+      base_exclude_outcomes <- c("cluster", "patient_ID", "source")
+      base_exclude_predictors <- c("patient_ID", "source")
 
       # Apply base exclusions
       categorical_choices <- setdiff(categorical_choices, base_exclude_outcomes)
@@ -4603,7 +4667,7 @@ server <- function(input, output, session) {
         is.character(x) || is.factor(x)
       })])
       # Exclude cluster, patient_ID, run_date, and source from categorical outcome choices
-      categorical_choices <- setdiff(categorical_choices, c("cluster", "patient_ID", "run_date", "source"))
+      categorical_choices <- setdiff(categorical_choices, c("cluster", "patient_ID", "source"))
       # Apply global settings filter
       categorical_choices <- filter_by_global_settings(categorical_choices)
 
@@ -5426,7 +5490,7 @@ server <- function(input, output, session) {
       meta_cols <- colnames(rv$meta_cell)
       categorical_choices <- sort(meta_cols[sapply(rv$meta_cell, function(x) is.character(x) || is.factor(x))])
       # Exclude cluster, patient_ID, run_date, and source from categorical outcome choices
-      categorical_choices <- setdiff(categorical_choices, c("cluster", "patient_ID", "run_date", "source"))
+      categorical_choices <- setdiff(categorical_choices, c("cluster", "patient_ID", "source"))
       # Apply global settings filter
       categorical_choices <- filter_by_global_settings(categorical_choices)
       updatePickerInput(session, "cat_group_var",
@@ -5443,7 +5507,7 @@ server <- function(input, output, session) {
       meta_cols <- colnames(rv$meta_cell)
       categorical_choices <- sort(meta_cols[sapply(rv$meta_cell, function(x) is.character(x) || is.factor(x))])
       # Exclude cluster, patient_ID, run_date, and source from categorical outcome choices
-      categorical_choices <- setdiff(categorical_choices, c("cluster", "patient_ID", "run_date", "source"))
+      categorical_choices <- setdiff(categorical_choices, c("cluster", "patient_ID", "source"))
       # Apply global settings filter
       categorical_choices <- filter_by_global_settings(categorical_choices)
       continuous_choices <- sort(meta_cols[sapply(rv$meta_cell, function(x) is.numeric(x) || is.integer(x))])
@@ -6659,9 +6723,9 @@ server <- function(input, output, session) {
     {
       meta_cols <- sort(colnames(rv$meta_cell))
       # Exclude cluster, patient_ID, run_date, and source from outcome choices
-      outcome_choices <- setdiff(meta_cols, c("cluster", "patient_ID", "run_date", "source"))
+      outcome_choices <- setdiff(meta_cols, c("cluster", "patient_ID", "source"))
       # Exclude patient_ID, source, and run_date from predictor choices
-      predictor_choices <- setdiff(meta_cols, c("patient_ID", "source", "run_date"))
+      predictor_choices <- setdiff(meta_cols, c("patient_ID", "source"))
       updatePickerInput(session, "fs_outcome", choices = outcome_choices)
       updatePickerInput(session, "fs_predictors", choices = predictor_choices)
     },
@@ -7430,10 +7494,10 @@ server <- function(input, output, session) {
       meta_cols <- colnames(rv$meta_sample)
       categorical_choices <- sort(meta_cols[sapply(rv$meta_sample, function(x) is.factor(x) || is.character(x))])
       # Exclude cluster, patient_ID, run_date, and source from outcome choices
-      categorical_choices <- setdiff(categorical_choices, c("cluster", "patient_ID", "run_date", "source"))
+      categorical_choices <- setdiff(categorical_choices, c("cluster", "patient_ID", "source"))
       predictor_choices <- sort(meta_cols)
       # Exclude patient_ID, source, and run_date from predictor choices
-      predictor_choices <- setdiff(predictor_choices, c("patient_ID", "source", "run_date"))
+      predictor_choices <- setdiff(predictor_choices, c("patient_ID", "source"))
       if (!("cluster" %in% predictor_choices)) {
         predictor_choices <- c(predictor_choices, "cluster")
       }
@@ -7456,10 +7520,10 @@ server <- function(input, output, session) {
       meta_cols <- colnames(rv$meta_sample)
       continuous_choices <- sort(meta_cols[sapply(rv$meta_sample, is.numeric)])
       # Exclude patient_ID, source, run_date, and cluster from continuous outcome choices
-      continuous_choices <- setdiff(continuous_choices, c("patient_ID", "source", "run_date", "cluster"))
+      continuous_choices <- setdiff(continuous_choices, c("patient_ID", "source", "cluster"))
       predictor_choices <- sort(meta_cols)
       # Exclude patient_ID, source, and run_date from predictor choices
-      predictor_choices <- setdiff(predictor_choices, c("patient_ID", "source", "run_date"))
+      predictor_choices <- setdiff(predictor_choices, c("patient_ID", "source"))
       if (!("cluster" %in% predictor_choices)) {
         predictor_choices <- c(predictor_choices, "cluster")
       }
@@ -9553,11 +9617,11 @@ server <- function(input, output, session) {
     req(rv$meta_sample)
     meta_cols <- colnames(rv$meta_sample)
     categorical_choices <- sort(meta_cols[sapply(rv$meta_sample, function(x) is.character(x) || is.factor(x))])
-    categorical_choices <- setdiff(categorical_choices, c("patient_ID", "run_date", "source"))
+    categorical_choices <- setdiff(categorical_choices, c("patient_ID", "source"))
     categorical_choices <- filter_by_global_settings(categorical_choices)
 
     continuous_choices <- sort(meta_cols[sapply(rv$meta_sample, function(x) is.numeric(x) || is.integer(x))])
-    continuous_choices <- setdiff(continuous_choices, c("patient_ID", "run_date", "source"))
+    continuous_choices <- setdiff(continuous_choices, c("patient_ID", "source"))
     continuous_choices <- filter_by_global_settings(continuous_choices)
     all_simple_choices <- sort(c(categorical_choices, continuous_choices))
 
@@ -9567,7 +9631,7 @@ server <- function(input, output, session) {
 
     # For custom mode - show all variables including continuous
     all_vars <- sort(colnames(rv$meta_sample))
-    all_vars <- setdiff(all_vars, c("run_date", "source"))
+    all_vars <- setdiff(all_vars, c("source"))
     all_vars <- filter_by_global_settings(all_vars)
     updatePickerInput(session, "sccomp_available_vars", choices = all_vars)
   })
@@ -9578,11 +9642,11 @@ server <- function(input, output, session) {
     meta_cols <- colnames(rv$meta_sample)
 
     cat_ch <- sort(meta_cols[sapply(rv$meta_sample, function(x) is.character(x) || is.factor(x))])
-    cat_ch <- setdiff(cat_ch, c("patient_ID", "run_date", "source"))
+    cat_ch <- setdiff(cat_ch, c("patient_ID", "source"))
     cat_ch <- filter_by_global_settings(cat_ch)
 
     con_ch <- sort(meta_cols[sapply(rv$meta_sample, function(x) is.numeric(x) || is.integer(x))])
-    con_ch <- setdiff(con_ch, c("patient_ID", "run_date", "source"))
+    con_ch <- setdiff(con_ch, c("patient_ID", "source"))
     con_ch <- filter_by_global_settings(con_ch)
 
     all_choices <- sort(c(cat_ch, con_ch))
@@ -10669,10 +10733,10 @@ server <- function(input, output, session) {
       meta_cols <- colnames(rv$meta_sample)
       continuous_choices <- sort(meta_cols[sapply(rv$meta_sample, is.numeric)])
       # Exclude patient_ID, source, run_date, and cluster from continuous outcome choices
-      continuous_choices <- setdiff(continuous_choices, c("patient_ID", "source", "run_date", "cluster"))
+      continuous_choices <- setdiff(continuous_choices, c("patient_ID", "source", "cluster"))
       predictor_choices <- sort(meta_cols)
       # Exclude patient_ID, source, and run_date from predictor choices
-      predictor_choices <- setdiff(predictor_choices, c("patient_ID", "source", "run_date"))
+      predictor_choices <- setdiff(predictor_choices, c("patient_ID", "source"))
       if (!("cluster" %in% predictor_choices)) {
         predictor_choices <- c(predictor_choices, "cluster")
       }
@@ -10687,7 +10751,7 @@ server <- function(input, output, session) {
       }
       # Event status controls — restrict to binary (≤2 unique non-NA values) columns only.
       # Purely continuous double columns are excluded unless they are strict 0/1 flags.
-      viable_event_cols <- setdiff(meta_cols, c("patient_ID", "source", "run_date", "cluster"))
+      viable_event_cols <- setdiff(meta_cols, c("patient_ID", "source", "cluster"))
       viable_event_cols <- viable_event_cols[vapply(viable_event_cols, function(cn) {
         col   <- rv$meta_sample[[cn]]
         non_na <- na.omit(col)

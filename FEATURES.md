@@ -186,7 +186,7 @@
 - **`patient_ID` Exclusion**: excluded from coercion, feature selection, and all picker lists.
 - **Reset Behavior**: changing feature visibility or type via the mini UI resets pairing and clears subsetting to prevent unexpected downstream behavior.
 - **Result State Caching**: all model/test results are stored in `reactiveVal` state objects; download handlers read run-time values (model type, validation strategy, outcome) captured at execution time rather than live inputs.
-- **Session Save/Restore**: the full app state (active features, type coercions, pairing variable, subsetting rules, annotations, collections, and all analysis tab settings) can be saved to a timestamped `.json` file from the Home tab and restored in a future session after re-uploading the same `.RData` file.
+- **Session Save/Restore**: the full app state (active features, type coercions, pairing variable, subsetting rules, annotations, collections, and all analysis tab settings) can be saved to a timestamped `.json` file from the Global Settings tab and restored in a future session after re-uploading the same `.RData` file.
 
 ### Exporting & Reporting
 

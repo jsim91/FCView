@@ -10297,7 +10297,10 @@ server <- function(input, output, session) {
       if (length(non_na) > 0) contrasts_string <- as.character(non_na[1])
     }
     if (!is.na(contrasts_string) && nzchar(contrasts_string)) {
-      x$parameter <- gsub(pattern = contrasts_string, replacement = "", x = as.character(x$parameter))
+      stripped <- gsub(pattern = contrasts_string, replacement = "", x = as.character(x$parameter))
+      # Guard: if stripping produces an empty string (continuous variable whose
+      # parameter name IS the variable name, e.g. "mo_post"), keep the original.
+      x$parameter <- ifelse(nzchar(stripped), stripped, as.character(x$parameter))
     } else {
       x$parameter <- as.character(x$parameter)
     }

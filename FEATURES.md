@@ -58,7 +58,7 @@
 - **Counts & Abundance**: retains `rv$counts_sample` for sccomp and `rv$abundance_sample` for frequency-based analyses.
 - **Type Coercion State**: `rv$type_coercions` stores requested coercion per column; `type_coercion_changed` flags changes.
 - **Mini UI Persistence**: `rv$mini_hide_states` persists per-feature hide toggles across UI interactions.
-- **Feature Transforms & Derivations**: `rv$feature_transforms` and `rv$feature_derivations` store all user-defined derived columns; new columns are written into `rv$meta_cached` so they are available across all downstream analyses before subsetting is evaluated.
+- **Feature Transforms & Derivations**: `rv$feature_transforms`, `rv$feature_derivations`, and `rv$feature_categorizations` store all user-defined derived columns; new columns are written into `rv$meta_cached` so they are available across all downstream analyses before subsetting is evaluated.
 
 ### Edit Features Tab
 
@@ -86,6 +86,16 @@
 - **Output Naming**: `<featureA>_<op>_<featureB>` (e.g. `cd4_div_cd8`, `tnf_lograt_il6`).
 - **Input Restriction**: Feature A and Feature B pickers are restricted to continuous (numeric) columns only to prevent nonsensical operations on categorical data.
 - **Active Derivations List**: each derivation is listed with its expression and a remove button.
+
+#### Categorize a Feature
+
+- **Purpose**: convert a continuous feature into a two-class categorical feature using a numeric threshold — e.g. `ifelse(hai_d0_titer >= 4, "Responder", "Non-responder")`.
+- **Inputs**: source feature (continuous only), threshold value, label for values ≥ threshold, label for values < threshold.
+- **Output Naming**: `<source>_cat_<threshold>` where the threshold string is sanitized (`.` → `p`, leading `-` → `neg`); e.g. `hai_d0_titer_cat_4`, `score_cat_4p5`, `delta_cat_neg1`.
+- **NA Preservation**: rows where the source feature is `NA` remain `NA` in the new column.
+- **Validation**: both class labels must be non-empty and different from each other; a column with the derived name must not already exist.
+- **Result**: the new column is a character vector; it will appear in categorical pickers throughout the app (Subsetting, Testing, Classification, etc.) and can be used immediately as an outcome or grouping variable.
+- **Active Categorizations List**: each categorization is listed showing the threshold rule and both class labels, with a remove button.
 
 #### Preview Feature Distribution
 
@@ -221,7 +231,7 @@
 
 ### Session Save / Restore
 
-- **Saved State Includes**: active features, hide states, type coercions, pairing variable, subsetting rules, annotations, collections, feature transforms, feature derivations, and all analysis tab settings (entity, outcome, predictors, model type, validation strategy, regularization, seeds, colors, etc.).
+- **Saved State Includes**: active features, hide states, type coercions, pairing variable, subsetting rules, annotations, collections, feature transforms, feature derivations, feature categorizations, and all analysis tab settings (entity, outcome, predictors, model type, validation strategy, regularization, seeds, colors, etc.).
 - **Seeds Stored**: `lm_seed` (classification), `reg_seed` (regression), `surv_seed` (time-to-event) are saved and restored.
 - **Backward Compatibility**: all fields use `%||%` fallback defaults; sessions saved before a field was added restore cleanly without error.
 - **Restore Order**: derived feature columns are reconstructed before coercions are applied, which is before subsetting rules are evaluated, matching the normal data-flow order.

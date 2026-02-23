@@ -1198,6 +1198,33 @@ ui <- navbarPage(
     ),
     uiOutput("derivations_list_ui"),
     hr(),
+    h3("Categorize a Feature"),
+    helpText("Create a binary categorical feature from a numeric threshold. Values \u2265 threshold receive the first label; values < threshold receive the second label."),
+    fluidRow(
+      column(3, uiOutput("categorize_col_ui")),
+      column(2,
+        numericInput("categorize_threshold", "Threshold (\u2265)", value = 0)
+      ),
+      column(2,
+        textInput("categorize_above_label", "\u2265 threshold label", value = "High")
+      ),
+      column(2,
+        textInput("categorize_below_label", "< threshold label", value = "Low")
+      ),
+      column(2,
+        tags$label("New feature name"),
+        textOutput("categorize_name_preview")
+      ),
+      column(1,
+        br(),
+        conditionalPanel(
+          condition = "output.dataReady",
+          actionButton("add_categorize_btn", "Add", icon = icon("plus"), class = "btn-primary btn-sm")
+        )
+      )
+    ),
+    uiOutput("categorizations_list_ui"),
+    hr(),
     h3("Preview Feature Distribution"),
     helpText("Select any continuous feature (original or derived) to preview its distribution. Useful for verifying that a transform achieves a more Gaussian shape for modelling."),
     fluidRow(
@@ -1991,8 +2018,9 @@ server <- function(input, output, session) {
     cluster_collections_working = list(), # Working state for UI edits (not saved until button click)
     cluster_collections_cached = list(), # Cached collections for use in other tabs
     # Derived features (transforms and derivations created in Edit Features tab)
-    feature_transforms  = list(),
-    feature_derivations = list()
+    feature_transforms      = list(),
+    feature_derivations     = list(),
+    feature_categorizations = list()
   )
   cat_plot_cache <- reactiveVal(NULL)
   cont_plot_cache <- reactiveVal(NULL)
@@ -2007,6 +2035,7 @@ server <- function(input, output, session) {
   collection_id_counter <- reactiveVal(0) # Counter for unique collection IDs
   transform_id_counter <- reactiveVal(0) # Counter for unique transform IDs
   derivation_id_counter <- reactiveVal(0) # Counter for unique derivation IDs
+  categorization_id_counter <- reactiveVal(0) # Counter for unique categorization IDs
   # rv$log <- reactiveVal(character())
 
   # Disable tabs at startup
@@ -3492,6 +3521,10 @@ server <- function(input, output, session) {
     selectInput("derivation_colB", "Feature B",
       choices = continuous_available_cols() %||% character(0))
   })
+  output$categorize_col_ui <- renderUI({
+    selectInput("categorize_source", "Source feature",
+      choices = continuous_available_cols() %||% character(0))
+  })
 
   # ---- Name preview outputs ----
   output$transform_name_preview <- renderText({
@@ -3512,6 +3545,14 @@ server <- function(input, output, session) {
     if (!nzchar(a) || !nzchar(b)) return("\u2014")
     op <- input$derivation_op %||% "/"
     paste0(a, "_", op_suffix(op), "_", b)
+  })
+
+  output$categorize_name_preview <- renderText({
+    src <- input$categorize_source    %||% ""
+    thr <- input$categorize_threshold %||% 0
+    if (!nzchar(src)) return("\u2014")
+    thr_str <- gsub("\\.", "p", sub("^-", "neg", as.character(thr)))
+    paste0(src, "_cat_", thr_str)
   })
 
   # ---- Per-entry remove observers (set up on add and on state restore) ----
@@ -3539,6 +3580,21 @@ server <- function(input, output, session) {
           remove_derived_col_from_rv(spec$new_col)
           rv$feature_derivations[[local_did]] <- NULL
           showNotification(paste("Removed derivation:", spec$new_col),
+            type = "message", duration = 3)
+        }
+      }, ignoreInit = TRUE, once = TRUE)
+    })
+  }
+
+  setup_categorize_remove <- function(cid) {
+    local({
+      local_cid <- cid
+      observeEvent(input[[paste0("remove_categorize_", local_cid)]], {
+        spec <- rv$feature_categorizations[[local_cid]]
+        if (!is.null(spec)) {
+          remove_derived_col_from_rv(spec$new_col)
+          rv$feature_categorizations[[local_cid]] <- NULL
+          showNotification(paste("Removed categorization:", spec$new_col),
             type = "message", duration = 3)
         }
       }, ignoreInit = TRUE, once = TRUE)
@@ -3628,6 +3684,42 @@ server <- function(input, output, session) {
       type = "message", duration = 4)
   })
 
+  # ---- Add categorization ----
+  observeEvent(input$add_categorize_btn, {
+    req(rv$data_ready, rv$meta_cached)
+    src   <- input$categorize_source    %||% ""
+    thr   <- as.numeric(input$categorize_threshold %||% 0)
+    above <- trimws(input$categorize_above_label   %||% "High")
+    below <- trimws(input$categorize_below_label   %||% "Low")
+    if (!nzchar(src) || !(src %in% names(rv$meta_cached))) {
+      showNotification("Please select a source feature.", type = "warning"); return()
+    }
+    if (!nzchar(above) || !nzchar(below)) {
+      showNotification("Please provide labels for both classes.", type = "warning"); return()
+    }
+    if (identical(above, below)) {
+      showNotification("The two class labels must be different.", type = "warning"); return()
+    }
+    thr_str <- gsub("\\.", "p", sub("^-", "neg", as.character(thr)))
+    new_col <- paste0(src, "_cat_", thr_str)
+    if (new_col %in% names(rv$meta_cached)) {
+      showNotification(paste0("Feature '", new_col, "' already exists."),
+        type = "warning"); return()
+    }
+    vals     <- as.numeric(rv$meta_cached[[src]])
+    col_data <- ifelse(!is.na(vals) & vals >= thr, above, below)
+    col_data[is.na(vals)] <- NA_character_
+    add_derived_col_to_rv(new_col, col_data)
+    categorization_id_counter(categorization_id_counter() + 1L)
+    cid  <- as.character(categorization_id_counter())
+    spec <- list(id = cid, source = src, threshold = thr,
+                 above_label = above, below_label = below, new_col = new_col)
+    rv$feature_categorizations[[cid]] <- spec
+    setup_categorize_remove(cid)
+    showNotification(paste0("Added categorical feature: ", new_col),
+      type = "message", duration = 4)
+  })
+
   # ---- Render lists of active transforms / derivations ----
   output$transforms_list_ui <- renderUI({
     tfs <- rv$feature_transforms
@@ -3679,6 +3771,33 @@ server <- function(input, output, session) {
       )
     })
     tagList(tags$h5("Active derivations:"), rows)
+  })
+
+  output$categorizations_list_ui <- renderUI({
+    cats <- rv$feature_categorizations
+    if (length(cats) == 0)
+      return(tags$p(style = "color:#999; font-style:italic; margin-top:6px;",
+        "No categorizations added yet."))
+    rows <- lapply(names(cats), function(cid) {
+      spec <- cats[[cid]]
+      fluidRow(
+        column(10,
+          tags$span(icon("arrow-right"), "\u00a0",
+            tags$strong(spec$new_col),
+            tags$span(style = "color:#666; margin-left:6px;",
+              paste0("(", spec$source, " \u2265 ", spec$threshold,
+                     " \u2192 '", spec$above_label, "'; < ", spec$threshold,
+                     " \u2192 '", spec$below_label, "')"))
+          )
+        ),
+        column(2,
+          actionButton(paste0("remove_categorize_", cid), "",
+            icon = icon("trash"), class = "btn-danger btn-sm",
+            style = "float:right;")
+        )
+      )
+    })
+    tagList(tags$h5("Active categorizations:"), rows)
   })
 
   # ---- Distribution preview ----
@@ -13275,8 +13394,9 @@ server <- function(input, output, session) {
           cluster_collections = isolate(rv$cluster_collections)
         ),
         derived = list(
-          feature_transforms  = isolate(rv$feature_transforms),
-          feature_derivations = isolate(rv$feature_derivations)
+          feature_transforms      = isolate(rv$feature_transforms),
+          feature_derivations     = isolate(rv$feature_derivations),
+          feature_categorizations = isolate(rv$feature_categorizations)
         ),
         sccomp = list(
           entity = isolate(input$sccomp_entity) %||% "Clusters",
@@ -13453,7 +13573,36 @@ server <- function(input, output, session) {
         }
       }
 
-      n_restored <- length(saved_transforms) + length(saved_derivations)
+      saved_categorizations <- drv$feature_categorizations %||% list()
+      for (cid in names(saved_categorizations)) {
+        spec    <- saved_categorizations[[cid]]
+        new_col <- as.character(spec$new_col     %||% "")
+        src     <- as.character(spec$source      %||% "")
+        thr     <- as.numeric(spec$threshold     %||% 0)
+        above   <- as.character(spec$above_label %||% "High")
+        below   <- as.character(spec$below_label %||% "Low")
+        if (nzchar(new_col) && nzchar(src) &&
+            src %in% names(rv$meta_cached) &&
+            !new_col %in% names(rv$meta_cached)) {
+          vals     <- as.numeric(rv$meta_cached[[src]])
+          col_data <- tryCatch({
+            out <- ifelse(!is.na(vals) & vals >= thr, above, below)
+            out[is.na(vals)] <- NA_character_
+            out
+          }, error = function(e) NULL)
+          if (!is.null(col_data)) {
+            add_derived_col_to_rv(new_col, col_data)
+            clean_cid <- gsub("[^A-Za-z0-9]", "", cid)
+            rv$feature_categorizations[[clean_cid]] <- list(
+              id = clean_cid, source = src, threshold = thr,
+              above_label = above, below_label = below, new_col = new_col
+            )
+            setup_categorize_remove(clean_cid)
+          }
+        }
+      }
+
+      n_restored <- length(saved_transforms) + length(saved_derivations) + length(saved_categorizations)
       if (n_restored > 0) {
         # Advance counters past the highest restored ID so new additions don't collide
         restored_t_ids <- suppressWarnings(as.integer(names(rv$feature_transforms)))
@@ -13464,9 +13613,14 @@ server <- function(input, output, session) {
         max_d <- if (length(restored_d_ids) > 0) max(restored_d_ids, na.rm = TRUE) else 0L
         derivation_id_counter(max(derivation_id_counter(), max_d))
 
+        restored_c_ids <- suppressWarnings(as.integer(names(rv$feature_categorizations)))
+        max_c <- if (length(restored_c_ids) > 0) max(restored_c_ids, na.rm = TRUE) else 0L
+        categorization_id_counter(max(categorization_id_counter(), max_c))
+
         showNotification(
-          paste0("Restored ", length(saved_transforms), " transform(s) and ",
-                 length(saved_derivations), " derivation(s)."),
+          paste0("Restored ", length(saved_transforms), " transform(s), ",
+                 length(saved_derivations), " derivation(s), and ",
+                 length(saved_categorizations), " categorization(s)."),
           type = "message", duration = 4
         )
       }

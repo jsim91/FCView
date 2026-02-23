@@ -4,8 +4,9 @@
 
 | Tab | Purpose |
 |---|---|
-| Home | Upload data, dataset overview, metadata preview |
-| Global Settings | Feature visibility, type coercion, pairing, subsetting, data export |
+| Home | Upload data, dataset overview, metadata preview, session state save/restore |
+| Subsetting | Pairing variable, subsetting rules, incomplete pair trimming, data export |
+| Edit Features | Feature visibility, type coercion, feature transforms, feature derivations, distribution preview |
 | UMAP | Embedding visualization and faceting |
 | tSNE | Embedding visualization and faceting |
 | Annotation | Cluster heatmap and cluster-to-celltype annotation engine |
@@ -14,7 +15,7 @@
 | Categorical | Per-entity abundance boxplot/violin plots with group comparisons |
 | Continuous | Per-entity abundance scatter plots with continuous metadata correlation |
 | Feature Selection | Variable importance filtering via Ridge, Elastic Net, or Boruta |
-| Classification | Binary outcome modeling with multiple classifiers and validation strategies |
+| Classification | Binary/multiclass outcome modeling with multiple classifiers and validation strategies |
 | Regression | Continuous outcome modeling with multiple regressors and validation strategies |
 | sccomp | Bayesian differential composition analysis |
 | Time to Event | Cox proportional hazards survival modeling |
@@ -28,12 +29,13 @@
 - **Dataset Preview**: display detected metadata features with data type and example values on the Home tab.
 - **Downsampling**: optional per-upload cell downsampling (`max_cells_upload`) with deterministic seed and notification.
 - **Metadata Mapping**: coherent mapping of per-sample metadata with per-cell metadata throughout the app.
-- **Metadata Feature Quick Actions**: hide features from downstream UI or override data types (continuous ↔ categorical) per feature using the Global Settings mini UI.
+- **Metadata Feature Management**: hide features from downstream UI, override data types (continuous ↔ categorical), add derived/transformed columns, and preview distributions — all in the Edit Features tab.
 - **Subsetting Rules**: build, apply, preview, and export per-sample subsetting rules using numeric operators and categorical value pickers; combine rules with AND/OR logic.
-- **Pairing Support**: select the metadata variable that identifies matched samples/patients across conditions for paired statistical testing.
+- **Pairing Support**: select the metadata variable that identifies matched samples/patients across conditions for paired statistical testing; picker is restricted to categorical non-hidden columns.
 - **Paired Testing Autodetection**: app backend checks pairing feasibility in real-time and updates available test choices accordingly.
+- **Session Save/Restore**: the full app state can be saved to a timestamped `.json` file and restored in a future session after re-uploading the same `.RData` file. Save/restore controls are on the Home tab.
 - **Tab Locking**: all tabs are disabled during data upload and re-enabled only after successful initialization to prevent invalid interactions.
-- **Status Indicators**: reactive `output` flags (`hasResults`, `hasSubset`, `hasSccompResults`, etc.) drive conditional panels, download buttons, and tab availability.
+- **Status Indicators**: reactive `output` flags drive conditional panels, download buttons, and tab availability.
 - **User Notifications**: `showNotification` provides real-time feedback on status, errors, and warnings throughout the app.
 
 ---
@@ -47,6 +49,7 @@
 - **Embedding Handling**: automatically converts matrix embeddings to `data.frame` for UMAP and tSNE plotting.
 - **Downsampling on Upload**: configurable `max_cells_upload` threshold; deterministic sampling with seed and notifications.
 - **Comprehensive Sanity Checks**: validates `patient_ID`, abundance row names, counts matrix presence, and emits user-facing notifications.
+- **`run_date` Propagation**: `run_date` (when present in per-cell metadata) is joined onto per-sample metadata and made available as a grouping/batch variable throughout the app.
 
 ### Data Structures & Caching
 
@@ -55,41 +58,62 @@
 - **Counts & Abundance**: retains `rv$counts_sample` for sccomp and `rv$abundance_sample` for frequency-based analyses.
 - **Type Coercion State**: `rv$type_coercions` stores requested coercion per column; `type_coercion_changed` flags changes.
 - **Mini UI Persistence**: `rv$mini_hide_states` persists per-feature hide toggles across UI interactions.
+- **Feature Transforms & Derivations**: `rv$feature_transforms` and `rv$feature_derivations` store all user-defined derived columns; new columns are written into `rv$meta_cached` so they are available across all downstream analyses before subsetting is evaluated.
 
-### Global Settings & Feature Controls
+### Edit Features Tab
+
+#### Feature Type Coercion & Visibility
 
 - **`features_dropdown`**: multi-select picker to choose which metadata columns to surface in downstream UI.
 - **`features_mini_ui`**: per-selected-feature compact rows with a hide checkbox and type selector; `rv$available_features` is derived from these states.
-- **Global Settings Summary**: live text summary of currently active feature types and hidden features.
-- **Single Source of Truth**: `features_mini_ui` replaces legacy checkboxes — mini inputs persist directly into `rv` state.
+- **Single Source of Truth**: mini inputs persist directly into `rv` state on change; a per-column `identical()` guard prevents spurious reactive cascades.
+- **Validation**: `validate_coercions()` inspects column data and provides valid conversion paths; `apply_coercion()` applies changes (excludes `run_date` and `patient_ID`).
+- **Real-time Effects**: testing and modeling method choices update when data types change.
+- **Targeted Reset on Hide/Type Change**: hiding a feature or changing its type resets only the pairing variable and subsetting rules that reference that specific column; unrelated rules and pickers are not disturbed.
 
-### Type Coercion System
+#### Transform a Feature
 
-- **Validation**: `validate_coercions()` inspects column data and provides valid conversion paths.
-- **Application**: `apply_coercion()` performs data type conversions; coercions are applied only to exposed features (excludes `run_date` and `patient_ID`).
-- **Real-time Effects**: testing and modeling method choices are updated when data types change.
-- **Coercion Safety**: when coercions change, `pairing_var` and all subsetting rules are reset and the user is notified.
+- **Supported Transforms**: natural log (`ln`, uses `log()` internally), log₂, log₁₀, logₙ (custom base), square root, absolute value, z-score, inverse (1/x), square, cube.
+- **Output Naming**: new column is named `<source>_<suffix>` (e.g. `age_ln`, `cd4_log2`, `il6_zscore`).
+- **Zero-Detection**: log transforms automatically detect zeros in non-NA values, apply a `+1` shift before transforming, and append `_p1` to the suffix (e.g. `age_ln_p1`). A warning notification is shown.
+- **NA Preservation**: `apply_transform_fn()` restores NAs explicitly after transformation, preventing NA→NaN silent coercion.
+- **Active Transforms List**: each active transform is listed with a label `(<source> → <transform>)` — natural log displays as `ln` for clarity — and a trash-button for removal.
+- **Remove Behavior**: removing a transform deletes the derived column from `rv$meta_cached` and all downstream metadata structures.
 
-### Pairing & Paired-Testing Support
+#### Derive a Feature
 
-- **Pairing Variable Picker**: `pairing_var` updated with available metadata columns; selection is preserved where possible across state changes.
+- **Supported Operators**: A÷B, A×B, A+B, A−B, A^B, log(A/B).
+- **Output Naming**: `<featureA>_<op>_<featureB>` (e.g. `cd4_div_cd8`, `tnf_lograt_il6`).
+- **Input Restriction**: Feature A and Feature B pickers are restricted to continuous (numeric) columns only to prevent nonsensical operations on categorical data.
+- **Active Derivations List**: each derivation is listed with its expression and a remove button.
+
+#### Preview Feature Distribution
+
+- **Source Data**: reads from `rv$meta_sample` (the active subsetted dataset), so the preview always reflects current subsetting rules.
+- **Histogram** with configurable bin count (default 25); optional empirical density overlay; optional fitted normal reference curve.
+- **Subtitle Statistics**: n, mean, SD, skewness, and normality test result displayed inline.
+- **Normality Testing**: Shapiro-Wilk for n ≤ 5000; Kolmogorov-Smirnov (vs. fitted normal) for larger samples. Result annotated with significance stars (`ns`, `*`, `**`, `***`).
+
+### Subsetting Tab
+
+- **Pairing Variable Picker**: restricted to categorical (character/factor) non-hidden columns only; automatically updates choices when features are hidden or type-coerced. Valid selection is preserved; the picker clears silently when the selected column is hidden or becomes non-categorical. A notification is shown only when the current selection is actively hidden.
 - **Feasibility Checks**: `test_can_pair()` and `cat_can_pair()` verify pairing feasibility given current data and subset.
 - **UI Adaptation**: test selection UIs adapt to show paired tests only when pairing is both selected and feasible.
 - **Incomplete Pair Trimming**: optional removal of samples with incomplete pairing by one or more categorical features, applied after subsetting rules.
-
-### Subsetting Engine
-
 - **Rule-based UI**: add multiple rules with stable IDs; supports numeric range operators and categorical multi-value pickers.
 - **Dynamic Value UI**: numeric sliders and categorical value pickers render on-the-fly based on selected column type.
+- **Hidden Column Exclusion**: hidden features are excluded from subsetting rule column choices as well as from the pairing picker.
 - **Apply & Preview**: intersection/union logic, subset preview showing sample distribution and a unique `subset_id`.
-- **Exports**: `export_subset_meta`, `export_subset_frequencies`, and `export_subset_counts` write the current subset to CSV with rows aligned to `patient_ID`.
+- **Exports**: `export_subset_meta`, `export_subset_frequencies`, and `export_subset_counts` write the current subset to CSV.
 
 ### Annotation Tab
 
 - **Cluster Heatmap**: configurable color theme (viridis, heat, greyscale), optional row/column clustering, downloadable as PDF.
 - **Cluster Annotation Engine**: define named cell types, assign clusters to them; annotations propagate throughout the app when "Celltypes" entity mode is selected.
+- **Unassigned Handling**: clusters not assigned to any cell type are mapped to the string `"unassigned"` throughout all downstream computations (embeddings, aggregation, annotation pre-fill) rather than propagating `NA`.
+- **Duplicate Cluster Warning**: saving annotations with any cluster appearing in more than one cell type group triggers a named warning notification listing the conflicting clusters.
 - **Apply Annotations**: annotations are held in a working state until explicitly applied to prevent accidental overwrites.
-- **Pre-fill from FCSimple**: when the uploaded object contains a `cluster_mapping` produced by `FCSimple::fcs_annotate_clusters()` and resolved by `fcs_prepare_fcview_object()`, the annotation UI is automatically pre-populated on upload with the existing cell type assignments; clusters with no assignment (`NA`) are safely excluded from the pre-fill.
+- **Pre-fill from FCSimple**: when the uploaded object contains a `cluster_mapping`, the annotation UI is automatically pre-populated on upload; clusters with no assignment are safely excluded from the pre-fill.
 
 ### Collections Tab
 
@@ -132,16 +156,28 @@
 - **Model Types**: Logistic Regression (with optional L1/L2/Elastic Net regularization), Elastic Net (standalone), Random Forest.
 - **Regularization Options (Logistic)**: Lasso (L1), Ridge (L2), or Elastic Net (L1+L2); elastic net α tunable by slider.
 - **Validation Strategies**: Train/Test split (configurable fraction), k-fold cross-validation (configurable k), Leave-One-Out CV.
+- **Random Seed**: user-configurable integer seed for reproducible train/test splits and model fitting (default 42); stored in session state.
+- **Performance Metrics Table**: all rows include an `Interpretation` column with plain-language descriptions.
+- **Model Complexity Warning (EPV)**:
+  - *Binary*: reports events-per-variable (EPV) = minority class count ÷ effective predictor count; thresholds at < 5 (WARNING), < 10 (CAUTION), ≥ 10 (ADEQUATE).
+  - *Multiclass*: reports average samples per class per predictor; same thresholds.
+  - *Effective predictor count*: for Lasso/Elastic Net (α > 0) models, counts only non-zero coefficients (|β| > 1e-10, intercept excluded); for Ridge (α = 0) and RF the full input count is used. Labels show both effective and input counts when they differ (e.g. `"effective p=5 (input p=12)"`).
 - **Outputs**: ROC curve plot, AUC and performance metrics table, model summary, feature importance table.
-- **Export**: ZIP bundle containing model summary, performance metrics, feature coefficients/importances, and the ROC plot; export filename reflects the model type and validation strategy captured at run time.
+- **Export**: ZIP bundle containing model summary, performance metrics, feature coefficients/importances, and the ROC plot.
 
 ### Regression Tab
 
 - **Model Types**: Linear Regression (with optional L1/L2/Elastic Net regularization), Ridge Regression (standalone), Elastic Net (tunable α), Random Forest.
 - **Regularization Options (Linear)**: Lasso, Ridge, or Elastic Net; elastic net α tunable by slider.
 - **Validation Strategies**: Train/Test split (configurable fraction), k-fold CV, Leave-One-Out CV.
-- **Outputs**: observed vs predicted plot, residuals vs fitted plot, performance metrics (R², RMSE, MAE), model summary, feature importance table.
-- **Export**: ZIP bundle with all results and figures; filename reflects model type and validation strategy captured at run time.
+- **Random Seed**: user-configurable integer seed for reproducible train/test splits and model fitting (default 42); stored in session state.
+- **Layout**: three diagnostic plots (Observed vs Predicted, Residuals vs Fitted, Residual Q-Q) on the top row; Model Summary and Performance Metrics table side-by-side below; Model Features table in the right column.
+- **Performance Metrics Table**: all rows include an `Interpretation` column with plain-language descriptions.
+- **Model Complexity Warning**: reports observations-per-predictor (n ÷ effective p); thresholds at < 5 (WARNING), < 10 (CAUTION), 10–20 (ADEQUATE), ≥ 20 (GOOD). Uses effective predictor count for Lasso/Elastic Net (same logic as Classification tab).
+- **Homoskedasticity Check**: Spearman rank correlation of |residuals| vs fitted values; reports ρ and p-value; PASS (p > 0.05), MARGINAL (p < 0.05), FAIL (p < 0.01). Significant result indicates heteroskedasticity — variance changing with fitted values — which invalidates standard errors and p-values from linear models.
+- **Residual Normality Check**: Shapiro-Wilk test (n ≤ 5000) reports W and p-value; for n > 5000 the test is skipped with a note to inspect the Q-Q plot. Required for valid inference (CIs, p-values) from linear models.
+- **Residual Q-Q Plot**: normal quantile-quantile plot of residuals with reference line; systematic curvature indicates departure from normality.
+- **Export**: ZIP bundle with all results and figures.
 
 ### sccomp Tab
 
@@ -179,16 +215,28 @@
 - **Faceting**: tile plots by a categorical metadata feature with equal per-group cell sampling to prevent overrepresentation bias.
 - **Export**: PDF download of rendered embedding facets.
 
+### Effective Predictor Count
+
+- **`get_effective_n_predictors(res)`**: shared helper used by both Classification and Regression performance tables. For glmnet models with α > 0 (Lasso or Elastic Net), counts only predictors with |β| > 1e-10 (excluding the intercept; for multiclass, takes the union of non-zero predictors across all classes). For Ridge (α = 0), RF, and `lm`, falls back to the input predictor count stored in `res$n_predictors`. When effective ≠ input, metric labels show both counts (e.g. `"effective p=5 (input p=12)"`).
+
+### Session Save / Restore
+
+- **Saved State Includes**: active features, hide states, type coercions, pairing variable, subsetting rules, annotations, collections, feature transforms, feature derivations, and all analysis tab settings (entity, outcome, predictors, model type, validation strategy, regularization, seeds, colors, etc.).
+- **Seeds Stored**: `lm_seed` (classification), `reg_seed` (regression), `surv_seed` (time-to-event) are saved and restored.
+- **Backward Compatibility**: all fields use `%||%` fallback defaults; sessions saved before a field was added restore cleanly without error.
+- **Restore Order**: derived feature columns are reconstructed before coercions are applied, which is before subsetting rules are evaluated, matching the normal data-flow order.
+- **Controls Location**: Save/Restore buttons are on the Home tab sidebarPanel.
+
 ### User Experience & Robustness
 
 - **Try/Catch Guards**: defensive `tryCatch` wrapping around UI updates to suppress errors when inputs are not yet available.
+- **Per-Column Observer Guards**: `identical()` early-return check prevents mini UI re-renders from firing downstream effects when values haven't actually changed.
 - **Persistent Metadata Description**: Home tab metadata table held in a static context as a reference throughout the session.
-- **`patient_ID` Exclusion**: excluded from coercion, feature selection, and all picker lists.
-- **Reset Behavior**: changing feature visibility or type via the mini UI resets pairing and clears subsetting to prevent unexpected downstream behavior.
-- **Result State Caching**: all model/test results are stored in `reactiveVal` state objects; download handlers read run-time values (model type, validation strategy, outcome) captured at execution time rather than live inputs.
-- **Session Save/Restore**: the full app state (active features, type coercions, pairing variable, subsetting rules, annotations, collections, and all analysis tab settings) can be saved to a timestamped `.json` file from the Global Settings tab and restored in a future session after re-uploading the same `.RData` file.
+- **`patient_ID` and `run_date` Exclusion**: excluded from coercion, feature selection, and editable picker lists.
+- **Targeted Reset on Feature Change**: hiding or type-coercing a feature resets only the pairing variable and subsetting rules that reference that specific column; unrelated state is not disturbed.
+- **Result State Caching**: all model/test results are stored in `reactiveVal` state objects; download handlers read run-time values captured at execution time rather than live inputs.
 
 ### Exporting & Reporting
 
 - **Download Handlers**: subset metadata CSV, cluster frequencies CSV, cluster counts CSV, sccomp results CSV, sccomp contrast CSV, sccomp interval plot PDF, sccomp contrast plot PDF, categorical plots PDF, continuous plots PDF, cluster heatmap PDF, UMAP/tSNE facet PDF, feature selection ZIP, classification ZIP, regression ZIP, time-to-event ZIP, session state `.json`.
-- **Human-Readable Summaries**: `global_settings_summary`, pairing summaries, subsetting preview, and model console summaries provide concise overviews of current app state.
+- **Human-Readable Summaries**: pairing summaries, subsetting preview, and model console summaries provide concise overviews of current app state.

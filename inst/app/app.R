@@ -1024,6 +1024,23 @@ ui <- navbarPage(
         fileInput("rdata_upload", "Upload .RData (FCSimple analysis object)", accept = ".RData"),
         numericInput("max_cells_upload", "Max cells to read in", value = 100000, min = 1000, step = 1000),
         helpText("If the uploaded dataset has more cells than this number, it will be randomly downsampled after upload. This is done to speed up UMAP and tSNE facet plotting."),
+        hr(),
+        h4("Session State"),
+        helpText(
+          "Save your current settings (features, coercions, pairing, subsetting rules, annotations, collections, and sccomp settings) to a JSON file.",
+          "In a future session, upload your .RData file first, then restore the session state file to return the app to where you left off.",
+          "Computed results (test outputs, model results, plots) are not saved."
+        ),
+        conditionalPanel(
+          condition = "output.dataReady",
+          downloadButton("download_session_state", "Save Session State (.json)", class = "btn-success"),
+          br(), br()
+        ),
+        fileInput("upload_session_state", NULL,
+          accept = ".json",
+          buttonLabel = "Restore Session State",
+          placeholder = "Upload a previously saved session .json"
+        ),
         width = 3
       ),
       mainPanel(
@@ -1035,21 +1052,7 @@ ui <- navbarPage(
     )
   ),
   tabPanel(
-    "Global Settings",
-    h3("Available Metadata Features & Type Coercion"),
-    helpText("Select metadata features to update. Categorical features can be converted to continuous where possible and vice versa for downstream testing. You may also choose to hide features from the app by selecting the 'Hide' checkbox. Changes take effect immediately."),
-    fluidRow(
-      column(
-        6,
-        pickerInput("features_dropdown", "Select Feature(s) to Update", choices = NULL, multiple = TRUE),
-        uiOutput("features_mini_ui")
-      ),
-      column(
-        6,
-        verbatimTextOutput("global_settings_summary")
-      )
-    ),
-    hr(),
+    "Subsetting",
     h3("Paired Testing Settings"),
     helpText("Select a metadata column to enable paired statistical tests. This column should identify matching samples/patients across conditions."),
     fluidRow(
@@ -1110,31 +1113,104 @@ ui <- navbarPage(
         uiOutput("export_buttons_ui"),
         br()
       )
-    ),
-    hr(),
-    h3("Session State"),
-    helpText(
-      "Save your current settings (features, coercions, pairing, subsetting rules, annotations, collections, and sccomp settings) to a JSON file.",
-      "In a future session, upload your .RData file first, then restore the session state file to return the app to where you left off.",
-      "Computed results (test outputs, model results, plots) are not saved."
-    ),
+    )
+  ),
+  tabPanel(
+    "Edit Features",
+    h3("Feature Type Coercion & Visibility"),
+    helpText("Select metadata features to update. Categorical features can be converted to continuous where possible and vice versa for downstream testing. You may also choose to hide features from the app by selecting the 'Hide' checkbox. Deselecting a feature resets it to its original type. Changes take effect immediately."),
     fluidRow(
       column(
-        4,
-        conditionalPanel(
-          condition = "output.dataReady",
-          downloadButton("download_session_state", "Save Session State (.json)", class = "btn-success")
-        )
+        6,
+        pickerInput("features_dropdown", "Select Feature(s) to Update", choices = NULL, multiple = TRUE),
+        uiOutput("features_mini_ui")
       ),
       column(
-        8,
-        fileInput("upload_session_state", NULL,
-          accept = ".json",
-          buttonLabel = "Restore Session State",
-          placeholder = "Upload a previously saved session .json"
+        6,
+        verbatimTextOutput("global_settings_summary")
+      )
+    ),
+    hr(),
+    h3("Transform a Feature"),
+    helpText("Apply a mathematical transform to a continuous feature. A new feature named <feature>_<transform> will be added to the dataset."),
+    fluidRow(
+      column(3, uiOutput("transform_source_ui")),
+      column(3,
+        selectInput("transform_type", "Transform", choices = c(
+          "Natural log [ln(x)]"       = "log",
+          "Log base 2 [log2(x)]"      = "log2",
+          "Log base 10 [log10(x)]"    = "log10",
+          "Log base N [log(x, N)]"    = "log_N",
+          "Square root [sqrt(x)]"     = "sqrt",
+          "Absolute value [|x|]"      = "abs",
+          "Z-score [scale(x)]"        = "zscore",
+          "Reciprocal [1/x]"          = "inv",
+          "Square [x\u00b2]"          = "sq",
+          "Cube [x\u00b3]"            = "cube"
+        ))
+      ),
+      column(2,
+        conditionalPanel(
+          condition = "input.transform_type == 'log_N'",
+          numericInput("transform_log_base", "Log base (N)", value = 2, min = 1.001, step = 1)
+        )
+      ),
+      column(2,
+        tags$label("New feature name"),
+        textOutput("transform_name_preview")
+      ),
+      column(2,
+        br(),
+        conditionalPanel(
+          condition = "output.dataReady",
+          actionButton("add_transform_btn", "Add", icon = icon("plus"), class = "btn-primary btn-sm")
         )
       )
-    )
+    ),
+    uiOutput("transforms_list_ui"),
+    hr(),
+    h3("Derive a Feature"),
+    helpText("Combine two features with an operator to create a new feature named <featureA>_<op>_<featureB>."),
+    fluidRow(
+      column(3, uiOutput("derivation_colA_ui")),
+      column(2,
+        selectInput("derivation_op", "Operator", choices = c(
+          "A \u00f7 B (ratio)"      = "/",
+          "A \u00d7 B (product)"    = "*",
+          "A + B (sum)"             = "+",
+          "A \u2212 B (difference)" = "-",
+          "A ^ B (power)"           = "^",
+          "log(A / B) (log-ratio)"  = "log_ratio"
+        ))
+      ),
+      column(3, uiOutput("derivation_colB_ui")),
+      column(2,
+        tags$label("New feature name"),
+        textOutput("derivation_name_preview")
+      ),
+      column(2,
+        br(),
+        conditionalPanel(
+          condition = "output.dataReady",
+          actionButton("add_derivation_btn", "Add", icon = icon("plus"), class = "btn-primary btn-sm")
+        )
+      )
+    ),
+    uiOutput("derivations_list_ui"),
+    hr(),
+    h3("Preview Feature Distribution"),
+    helpText("Select any continuous feature (original or derived) to preview its distribution. Useful for verifying that a transform achieves a more Gaussian shape for modelling."),
+    fluidRow(
+      column(4, uiOutput("dist_preview_picker_ui")),
+      column(2,
+        checkboxInput("dist_show_density", "Overlay density curve", value = TRUE),
+        checkboxInput("dist_show_normal", "Overlay normal reference", value = FALSE)
+      ),
+      column(2,
+        numericInput("dist_bins", "Bins", value = 25, min = 5, max = 200, step = 5)
+      )
+    ),
+    plotOutput("dist_preview_plot", height = "320px")
   ),
   tabPanel("UMAP", EmbeddingUI("umap", title = "UMAP")),
   tabPanel("tSNE", EmbeddingUI("tsne", title = "tSNE")),
@@ -1424,6 +1500,9 @@ ui <- navbarPage(
           condition = "input.lm_validation == 'k-fold CV'",
           numericInput("lm_k", "Number of folds", value = 5, min = 2, max = 20)
         ),
+        hr(),
+        numericInput("lm_seed", "Random seed", value = 42, min = 1, max = 2147483647, step = 1),
+        helpText("Set seed for reproducible train/test splits and model fitting."),
         actionButton("run_lm", "Run Model", class = "btn-primary"),
         br(), br(),
         conditionalPanel(
@@ -1469,7 +1548,7 @@ ui <- navbarPage(
     h4("Model Settings"),
     fluidRow(
       column(
-        3,
+        2,
         pickerInput("reg_entity", "Entity", choices = c("Clusters", "Celltypes"), selected = "Clusters"),
         uiOutput("reg_collections_ui"),
         pickerInput("reg_outcome", "Outcome variable (continuous)", choices = NULL),
@@ -1525,6 +1604,9 @@ ui <- navbarPage(
           condition = "input.reg_validation == 'k-fold CV'",
           numericInput("reg_k", "Number of folds", value = 5, min = 2, max = 20)
         ),
+        hr(),
+        numericInput("reg_seed", "Random seed", value = 42, min = 1, max = 2147483647, step = 1),
+        helpText("Set seed for reproducible train/test splits and model fitting."),
         actionButton("run_reg", "Run Model", class = "btn-primary"),
         br(), br(),
         conditionalPanel(
@@ -1535,25 +1617,41 @@ ui <- navbarPage(
         )
       ),
       column(
-        3,
+        7,
         conditionalPanel(
           condition = "output.hasRegResults",
-          h4("Model Summary"),
-          verbatimTextOutput("reg_summary"),
-          h4("Performance Metrics"),
-          tableOutput("reg_perf_table")
+          fluidRow(
+            column(
+              4,
+              h4("Observed vs Predicted"),
+              plotOutput("reg_obs_pred_plot", height = "350px")
+            ),
+            column(
+              4,
+              h4("Residuals vs Fitted"),
+              plotOutput("reg_residual_plot", height = "350px")
+            ),
+            column(
+              4,
+              h4("Residual Q-Q Plot"),
+              helpText("Points on the red line = normally distributed residuals."),
+              plotOutput("reg_qq_plot", height = "350px")
+            )
+          ),
+          fluidRow(
+            column(
+              4,
+              h4("Model Summary"),
+              verbatimTextOutput("reg_summary")
+            ),
+            column(
+              8,
+              h4("Performance Metrics"),
+              tableOutput("reg_perf_table")
+            )
+          )
         ),
         textOutput("reg_cleared_msg")
-      ),
-      column(
-        3,
-        conditionalPanel(
-          condition = "output.hasRegResults",
-          h4("Observed vs Predicted"),
-          plotOutput("reg_obs_pred_plot", height = "400px"),
-          h4("Residuals vs Fitted"),
-          plotOutput("reg_residual_plot", height = "400px")
-        )
       ),
       column(
         3,
@@ -1812,6 +1910,8 @@ ui <- navbarPage(
           showColour = "both"
         ),
         br(),
+        numericInput("surv_seed", "Random seed", value = 42, min = 1, max = 2147483647, step = 1),
+        helpText("Set seed for reproducible CV fold assignment in penalized models."),
         actionButton("run_surv", "Run Model", class = "btn-primary"),
         br(), br(),
         conditionalPanel(
@@ -1889,7 +1989,10 @@ server <- function(input, output, session) {
     # Cluster collections
     cluster_collections = list(), # Saved collections (source of truth for rest of app)
     cluster_collections_working = list(), # Working state for UI edits (not saved until button click)
-    cluster_collections_cached = list() # Cached collections for use in other tabs
+    cluster_collections_cached = list(), # Cached collections for use in other tabs
+    # Derived features (transforms and derivations created in Edit Features tab)
+    feature_transforms  = list(),
+    feature_derivations = list()
   )
   cat_plot_cache <- reactiveVal(NULL)
   cont_plot_cache <- reactiveVal(NULL)
@@ -1902,6 +2005,8 @@ server <- function(input, output, session) {
   surv_state <- reactiveVal(NULL)
   celltype_id_counter <- reactiveVal(0) # Counter for unique celltype IDs
   collection_id_counter <- reactiveVal(0) # Counter for unique collection IDs
+  transform_id_counter <- reactiveVal(0) # Counter for unique transform IDs
+  derivation_id_counter <- reactiveVal(0) # Counter for unique derivation IDs
   # rv$log <- reactiveVal(character())
 
   # Disable tabs at startup
@@ -2415,44 +2520,70 @@ server <- function(input, output, session) {
 
         # Persist mini hide checkbox changes
         observeEvent(input[[mini_hide_id]], {
-          # Guard against shutdown
           if (session$isEnded()) return()
-          
           val <- input[[mini_hide_id]]
           if (is.null(val)) return()
+          # Guard: only act if the value actually changed
+          if (identical(isTRUE(val), isTRUE(rv$mini_hide_states[[mycol]]))) return()
           rv$mini_hide_states[[mycol]] <- isTRUE(val)
-          # Reset pairing and subsetting to avoid unexpected behavior when visibility changes
-          tryCatch({ updatePickerInput(session, "pairing_var", selected = "") }, error = function(e) {})
-          rv$subsetting_enabled <- FALSE
-          rv$subset_rules <- list()
-          rv$subset_summary <- NULL
-          rv$subset_id <- "000000000"
-          tryCatch({ removeUI(selector = "[id^='rule_container_']", multiple = TRUE, immediate = TRUE) }, error = function(e) {})
-          tryCatch({ subset_rule_ids(integer(0)) }, error = function(e) {})
-          tryCatch({ subset_next_id(1) }, error = function(e) {})
-          tryCatch({ updateCheckboxInput(session, "enable_subsetting", value = FALSE) }, error = function(e) {})
-          showNotification("Pairing variable and subsetting reset due to metadata visibility change.", type = "warning", duration = 4)
+
+          # Reset pairing only if this column is being hidden (not unhidden)
+          if (isTRUE(val)) {
+            pairing_col <- isolate(input$pairing_var) %||% ""
+            if (identical(pairing_col, mycol)) {
+              tryCatch({ updatePickerInput(session, "pairing_var", selected = "") }, error = function(e) {})
+              showNotification(
+                paste0("Pairing variable reset: '", mycol, "' was hidden."),
+                type = "warning", duration = 4
+              )
+            }
+          }
+
+          # Remove only subsetting rules that reference this column
+          rule_ids_to_remove <- Filter(function(rid) {
+            identical(isolate(rv$subset_rules[[rid]]$column %||% ""), mycol) ||
+            identical(isolate(input[[paste0("rule_", rid, "_col")]]) %||% "", mycol)
+          }, as.list(isolate(subset_rule_ids())))
+          if (length(rule_ids_to_remove) > 0) {
+            for (rid in rule_ids_to_remove) {
+              tryCatch({ removeUI(selector = paste0("#rule_container_", rid), immediate = TRUE) }, error = function(e) {})
+              subset_rule_ids(setdiff(subset_rule_ids(), as.integer(rid)))
+            }
+            showNotification(
+              paste0("Subsetting rule(s) referencing '", mycol, "' removed (feature hidden)."),
+              type = "warning", duration = 4
+            )
+          }
         }, ignoreInit = TRUE)
 
         # Persist mini type selector changes
         observeEvent(input[[mini_type_id]], {
-          # Guard against shutdown
           if (session$isEnded()) return()
-          
           val <- input[[mini_type_id]]
           if (is.null(val)) return()
+          # Guard: only act if the value actually changed
+          if (identical(val, rv$type_coercions[[mycol]] %||% "")) return()
           rv$type_coercions[[mycol]] <- val
-          # Reset pairing and subsetting to avoid unexpected behavior when types change
-          tryCatch({ updatePickerInput(session, "pairing_var", selected = "") }, error = function(e) {})
-          rv$subsetting_enabled <- FALSE
-          rv$subset_rules <- list()
-          rv$subset_summary <- NULL
-          rv$subset_id <- "000000000"
-          tryCatch({ removeUI(selector = "[id^='rule_container_']", multiple = TRUE, immediate = TRUE) }, error = function(e) {})
-          tryCatch({ subset_rule_ids(integer(0)) }, error = function(e) {})
-          tryCatch({ subset_next_id(1) }, error = function(e) {})
-          tryCatch({ updateCheckboxInput(session, "enable_subsetting", value = FALSE) }, error = function(e) {})
-          showNotification("Pairing variable and subsetting reset due to metadata type change.", type = "warning", duration = 4)
+
+          # Note: pairing_var choices are kept in sync via the dedicated observe below;
+          # no explicit reset needed here — if the coerced type becomes non-categorical
+          # the column will be removed from the choices automatically.
+
+          # Remove only subsetting rules that reference this column
+          rule_ids_to_remove <- Filter(function(rid) {
+            identical(isolate(rv$subset_rules[[rid]]$column %||% ""), mycol) ||
+            identical(isolate(input[[paste0("rule_", rid, "_col")]]) %||% "", mycol)
+          }, as.list(isolate(subset_rule_ids())))
+          if (length(rule_ids_to_remove) > 0) {
+            for (rid in rule_ids_to_remove) {
+              tryCatch({ removeUI(selector = paste0("#rule_container_", rid), immediate = TRUE) }, error = function(e) {})
+              subset_rule_ids(setdiff(subset_rule_ids(), as.integer(rid)))
+            }
+            showNotification(
+              paste0("Subsetting rule(s) referencing '", mycol, "' removed (type changed)."),
+              type = "warning", duration = 4
+            )
+          }
         }, ignoreInit = TRUE)
       })
     })
@@ -2521,29 +2652,8 @@ server <- function(input, output, session) {
     # Always update meta_sample with coerced data
     rv$meta_sample <- meta_coerced
 
-    # If a coercion changed, reset pairing and subsetting for safety
+    # Reset the flag (resets are now handled in the per-column observers)
     if (isTRUE(type_coercion_changed())) {
-      # Reset pairing variable
-      updatePickerInput(session, "pairing_var", selected = "")
-
-      # Reset subsetting
-      rv$subsetting_enabled <- FALSE
-      rv$subset_rules <- list()
-      rv$subset_summary <- NULL
-      rv$subset_id <- "000000000"
-      removeUI(selector = "[id^='rule_container_']", multiple = TRUE, immediate = TRUE)
-      subset_rule_ids(integer(0))
-      subset_next_id(1)
-      updateCheckboxInput(session, "enable_subsetting", value = FALSE)
-
-      # Show notification
-      showNotification(
-        "Type coercion applied. Pairing variable and subsetting have been reset for safety.",
-        type = "warning",
-        duration = 6
-      )
-
-      # Reset the flag
       type_coercion_changed(FALSE)
     }
   })
@@ -2607,21 +2717,33 @@ server <- function(input, output, session) {
     ignoreNULL = FALSE
   )
 
-  # Update pairing_var choices when metadata loads (preserve current selection)
+  # Update pairing_var choices: categorical columns only, excluding hidden features.
+  # Reacts to both rv$meta_sample (incl. type coercions) and rv$mini_hide_states.
+  observe({
+    req(rv$meta_sample)
+    hidden_cols <- names(Filter(isTRUE, as.list(rv$mini_hide_states)))
+    visible_cols <- setdiff(colnames(rv$meta_sample), c(hidden_cols, "patient_ID", "run_date"))
+    cat_cols <- Filter(function(col) {
+      is.character(rv$meta_sample[[col]]) || is.factor(rv$meta_sample[[col]])
+    }, visible_cols)
+
+    current_selection <- isolate(input$pairing_var)
+    if (!is.null(current_selection) && nzchar(current_selection) && current_selection %in% cat_cols) {
+      updatePickerInput(session, "pairing_var", choices = c("", cat_cols), selected = current_selection)
+    } else {
+      if (!is.null(current_selection) && nzchar(current_selection) && !(current_selection %in% cat_cols)) {
+        # Selection became invalid (column hidden or type changed to non-categorical)
+        updatePickerInput(session, "pairing_var", choices = c("", cat_cols), selected = "")
+      } else {
+        updatePickerInput(session, "pairing_var", choices = c("", cat_cols), selected = current_selection %||% "")
+      }
+    }
+  })
+
+  # Update trim_incomplete_pairs when meta_sample changes
   observeEvent(rv$meta_sample,
     {
       req(rv$meta_sample)
-      all_cols <- colnames(rv$meta_sample)
-      current_selection <- input$pairing_var
-
-      # Preserve selection if it's still valid, otherwise reset
-      if (!is.null(current_selection) && current_selection %in% all_cols) {
-        updatePickerInput(session, "pairing_var", choices = c("", all_cols), selected = current_selection)
-      } else {
-        updatePickerInput(session, "pairing_var", choices = c("", all_cols), selected = "")
-      }
-
-      # Update trim_incomplete_pairs with categorical features only
       categorical_cols <- names(rv$meta_sample)[sapply(rv$meta_sample, function(col) {
         is.character(col) || is.factor(col)
       })]
@@ -3255,6 +3377,385 @@ server <- function(input, output, session) {
 
   output$dataReady <- reactive({ isTRUE(rv$data_ready) })
   outputOptions(output, "dataReady", suspendWhenHidden = FALSE)
+
+  # ========== EDIT FEATURES TAB: TRANSFORMS & DERIVATIONS ==========
+
+  # ---- Helper functions ----
+
+  transform_suffix <- function(type, base = NULL, shift = 0) {
+    s <- switch(type,
+      log       = "ln",
+      log2      = "log2",
+      log10     = "log10",
+      log_N     = paste0("log", base),
+      sqrt      = "sqrt",
+      abs       = "abs",
+      zscore    = "zscore",
+      inv       = "inv",
+      sq        = "sq",
+      cube      = "cube",
+      type
+    )
+    if (shift != 0) paste0(s, "_p", shift) else s
+  }
+
+  apply_transform_fn <- function(x, type, base = NULL, shift = 0) {
+    x <- as.numeric(x)
+    na_mask <- is.na(x)
+    if (shift != 0) x <- x + shift
+    result <- switch(type,
+      log    = log(x),
+      log2   = log2(x),
+      log10  = log10(x),
+      log_N  = log(x, base = base),
+      sqrt   = sqrt(x),
+      abs    = abs(x),
+      zscore = as.numeric(scale(x)),
+      inv    = 1 / x,
+      sq     = x^2,
+      cube   = x^3,
+      x
+    )
+    # Explicitly restore NAs (catches any transform that converts NA to NaN)
+    result[na_mask] <- NA_real_
+    result
+  }
+
+  op_suffix <- function(op) {
+    switch(op,
+      "/"         = "div",
+      "*"         = "mul",
+      "+"         = "add",
+      "-"         = "sub",
+      "^"         = "pow",
+      "log_ratio" = "lograt",
+      op
+    )
+  }
+
+  apply_derivation_fn <- function(a, b, op) {
+    a <- as.numeric(a); b <- as.numeric(b)
+    switch(op,
+      "/"         = a / b,
+      "*"         = a * b,
+      "+"         = a + b,
+      "-"         = a - b,
+      "^"         = a ^ b,
+      "log_ratio" = log(a / b),
+      rep(NA_real_, length(a))
+    )
+  }
+
+  # Add a derived column into all rv data stores; the coercion observer then
+  # propagates it to rv$meta_sample automatically.
+  add_derived_col_to_rv <- function(col_name, col_data) {
+    rv$meta_cached[[col_name]] <- col_data
+    if (!col_name %in% rv$all_meta_cols)
+      rv$all_meta_cols <- c(rv$all_meta_cols, col_name)
+    if (is.null(rv$type_coercions[[col_name]]))
+      rv$type_coercions[[col_name]] <- ""
+    if (is.null(rv$mini_hide_states[[col_name]]))
+      rv$mini_hide_states[[col_name]] <- FALSE
+  }
+
+  # Remove a derived column from all rv data stores.
+  remove_derived_col_from_rv <- function(col_name) {
+    rv$meta_cached[[col_name]]      <- NULL
+    rv$all_meta_cols                <- setdiff(rv$all_meta_cols, col_name)
+    rv$type_coercions[[col_name]]   <- NULL
+    rv$mini_hide_states[[col_name]] <- NULL
+  }
+
+  # All non-reserved columns available in meta_cached (incl. derived ones)
+  derived_available_cols <- reactive({
+    req(rv$meta_cached)
+    setdiff(colnames(rv$meta_cached), c("patient_ID", "source", "run_date"))
+  })
+
+  # Continuous-only subset of the above (for transform source picker)
+  continuous_available_cols <- reactive({
+    req(rv$meta_cached)
+    all_c <- derived_available_cols()
+    all_c[vapply(all_c, function(col) is.numeric(rv$meta_cached[[col]]), logical(1))]
+  })
+
+  # ---- Dynamic source/feature pickers ----
+  output$transform_source_ui <- renderUI({
+    selectInput("transform_source", "Source feature",
+      choices = continuous_available_cols() %||% character(0))
+  })
+  output$derivation_colA_ui <- renderUI({
+    selectInput("derivation_colA", "Feature A",
+      choices = continuous_available_cols() %||% character(0))
+  })
+  output$derivation_colB_ui <- renderUI({
+    selectInput("derivation_colB", "Feature B",
+      choices = continuous_available_cols() %||% character(0))
+  })
+
+  # ---- Name preview outputs ----
+  output$transform_name_preview <- renderText({
+    src  <- input$transform_source %||% ""; if (!nzchar(src)) return("\u2014")
+    type <- input$transform_type   %||% "log"
+    base <- if (identical(type, "log_N")) (input$transform_log_base %||% 2) else NULL
+    log_types <- c("log", "log2", "log10", "log_N")
+    shift <- 0L
+    if (type %in% log_types && !is.null(rv$meta_cached) && src %in% names(rv$meta_cached)) {
+      vals <- as.numeric(rv$meta_cached[[src]])
+      if (any(vals[!is.na(vals)] == 0)) shift <- 1L
+    }
+    paste0(src, "_", transform_suffix(type, base, shift))
+  })
+
+  output$derivation_name_preview <- renderText({
+    a  <- input$derivation_colA %||% ""; b <- input$derivation_colB %||% ""
+    if (!nzchar(a) || !nzchar(b)) return("\u2014")
+    op <- input$derivation_op %||% "/"
+    paste0(a, "_", op_suffix(op), "_", b)
+  })
+
+  # ---- Per-entry remove observers (set up on add and on state restore) ----
+  setup_transform_remove <- function(tid) {
+    local({
+      local_tid <- tid
+      observeEvent(input[[paste0("remove_transform_", local_tid)]], {
+        spec <- rv$feature_transforms[[local_tid]]
+        if (!is.null(spec)) {
+          remove_derived_col_from_rv(spec$new_col)
+          rv$feature_transforms[[local_tid]] <- NULL
+          showNotification(paste("Removed transform:", spec$new_col),
+            type = "message", duration = 3)
+        }
+      }, ignoreInit = TRUE, once = TRUE)
+    })
+  }
+
+  setup_derivation_remove <- function(did) {
+    local({
+      local_did <- did
+      observeEvent(input[[paste0("remove_derivation_", local_did)]], {
+        spec <- rv$feature_derivations[[local_did]]
+        if (!is.null(spec)) {
+          remove_derived_col_from_rv(spec$new_col)
+          rv$feature_derivations[[local_did]] <- NULL
+          showNotification(paste("Removed derivation:", spec$new_col),
+            type = "message", duration = 3)
+        }
+      }, ignoreInit = TRUE, once = TRUE)
+    })
+  }
+
+  # ---- Add transform ----
+  observeEvent(input$add_transform_btn, {
+    req(rv$data_ready, rv$meta_cached)
+    src  <- input$transform_source %||% ""
+    type <- input$transform_type   %||% "log"
+    base <- if (identical(type, "log_N")) (input$transform_log_base %||% 2) else NULL
+    if (!nzchar(src) || !(src %in% names(rv$meta_cached))) {
+      showNotification("Please select a source feature.", type = "warning"); return()
+    }
+    # For log-type transforms, detect zeros in non-NA values and apply +1 shift
+    log_types <- c("log", "log2", "log10", "log_N")
+    shift <- 0L
+    if (type %in% log_types) {
+      src_vals <- as.numeric(rv$meta_cached[[src]])
+      if (any(src_vals[!is.na(src_vals)] == 0)) {
+        shift <- 1L
+        showNotification(
+          paste0("Zero values detected in '", src, "'. Applying +1 shift before log transform (log(x + 1))."),
+          type = "warning", duration = 6
+        )
+      }
+    }
+    new_col <- paste0(src, "_", transform_suffix(type, base, shift))
+    if (new_col %in% names(rv$meta_cached)) {
+      showNotification(paste0("Feature '", new_col, "' already exists."),
+        type = "warning"); return()
+    }
+    col_data <- tryCatch(
+      apply_transform_fn(rv$meta_cached[[src]], type, base, shift),
+      error = function(e) {
+        showNotification(paste("Transform error:", e$message), type = "error"); NULL
+      }
+    )
+    if (is.null(col_data)) return()
+    add_derived_col_to_rv(new_col, col_data)
+    transform_id_counter(transform_id_counter() + 1L)
+    tid  <- as.character(transform_id_counter())
+    spec <- list(id = tid, source = src, transform = type, base = base, shift = shift, new_col = new_col)
+    rv$feature_transforms[[tid]] <- spec
+    setup_transform_remove(tid)
+    showNotification(paste0("Added transform feature: ", new_col),
+      type = "message", duration = 4)
+  })
+
+  # ---- Add derivation ----
+  observeEvent(input$add_derivation_btn, {
+    req(rv$data_ready, rv$meta_cached)
+    colA <- input$derivation_colA %||% ""
+    op   <- input$derivation_op   %||% "/"
+    colB <- input$derivation_colB %||% ""
+    if (!nzchar(colA) || !nzchar(colB)) {
+      showNotification("Please select both features.", type = "warning"); return()
+    }
+    if (colA == colB) {
+      showNotification("Feature A and Feature B must be different.",
+        type = "warning"); return()
+    }
+    if (!(colA %in% names(rv$meta_cached)) || !(colB %in% names(rv$meta_cached))) {
+      showNotification("One or both features not found in the data.",
+        type = "warning"); return()
+    }
+    new_col <- paste0(colA, "_", op_suffix(op), "_", colB)
+    if (new_col %in% names(rv$meta_cached)) {
+      showNotification(paste0("Feature '", new_col, "' already exists."),
+        type = "warning"); return()
+    }
+    col_data <- tryCatch(
+      apply_derivation_fn(rv$meta_cached[[colA]], rv$meta_cached[[colB]], op),
+      error = function(e) {
+        showNotification(paste("Derivation error:", e$message), type = "error"); NULL
+      }
+    )
+    if (is.null(col_data)) return()
+    add_derived_col_to_rv(new_col, col_data)
+    derivation_id_counter(derivation_id_counter() + 1L)
+    did  <- as.character(derivation_id_counter())
+    spec <- list(id = did, colA = colA, op = op, colB = colB, new_col = new_col)
+    rv$feature_derivations[[did]] <- spec
+    setup_derivation_remove(did)
+    showNotification(paste0("Added derived feature: ", new_col),
+      type = "message", duration = 4)
+  })
+
+  # ---- Render lists of active transforms / derivations ----
+  output$transforms_list_ui <- renderUI({
+    tfs <- rv$feature_transforms
+    if (length(tfs) == 0)
+      return(tags$p(style = "color:#999; font-style:italic; margin-top:6px;",
+        "No transforms added yet."))
+    rows <- lapply(names(tfs), function(tid) {
+      spec     <- tfs[[tid]]
+      base_txt <- if (!is.null(spec$base)) paste0(", base=", spec$base) else ""
+      transform_display <- if (identical(spec$transform, "log")) "ln" else spec$transform
+      fluidRow(
+        column(10,
+          tags$span(icon("arrow-right"), "\u00a0",
+            tags$strong(spec$new_col),
+            tags$span(style = "color:#666; margin-left:6px;",
+              paste0("(", spec$source, " \u2192 ", transform_display, base_txt, ")"))
+          )
+        ),
+        column(2,
+          actionButton(paste0("remove_transform_", tid), "",
+            icon = icon("trash"), class = "btn-danger btn-sm",
+            style = "float:right;")
+        )
+      )
+    })
+    tagList(tags$h5("Active transforms:"), rows)
+  })
+
+  output$derivations_list_ui <- renderUI({
+    dvs <- rv$feature_derivations
+    if (length(dvs) == 0)
+      return(tags$p(style = "color:#999; font-style:italic; margin-top:6px;",
+        "No derivations added yet."))
+    rows <- lapply(names(dvs), function(did) {
+      spec <- dvs[[did]]
+      fluidRow(
+        column(10,
+          tags$span(icon("arrow-right"), "\u00a0",
+            tags$strong(spec$new_col),
+            tags$span(style = "color:#666; margin-left:6px;",
+              paste0("(", spec$colA, " ", spec$op, " ", spec$colB, ")"))
+          )
+        ),
+        column(2,
+          actionButton(paste0("remove_derivation_", did), "",
+            icon = icon("trash"), class = "btn-danger btn-sm",
+            style = "float:right;")
+        )
+      )
+    })
+    tagList(tags$h5("Active derivations:"), rows)
+  })
+
+  # ---- Distribution preview ----
+  output$dist_preview_picker_ui <- renderUI({
+    cols <- continuous_available_cols() %||% character(0)
+    selectInput("dist_preview_col", "Feature to preview", choices = cols)
+  })
+
+  output$dist_preview_plot <- renderPlot({
+    req(rv$meta_sample, input$dist_preview_col)
+    col <- input$dist_preview_col
+    req(col %in% names(rv$meta_sample))
+    vals <- as.numeric(rv$meta_sample[[col]])
+    vals <- vals[is.finite(vals)]
+    if (length(vals) < 3) return(NULL)
+
+    bins  <- input$dist_bins %||% 25
+    n     <- length(vals)
+    mu    <- mean(vals)
+    sigma <- stats::sd(vals)
+    skew  <- (sum((vals - mu)^3) / n) / sigma^3
+
+    # Normality test: Shapiro-Wilk for n <= 5000, KS (vs fitted normal) for larger
+    norm_test <- if (n <= 5000) {
+      res <- stats::shapiro.test(vals)
+      list(name = "Shapiro-Wilk", p = res$p.value)
+    } else {
+      # KS test against the fitted normal distribution
+      res <- stats::ks.test(vals, "pnorm", mean = mu, sd = sigma)
+      list(name = "KS", p = res$p.value)
+    }
+    sig_label <- dplyr::case_when(
+      norm_test$p < 0.001 ~ "***",
+      norm_test$p < 0.01  ~ "**",
+      norm_test$p < 0.05  ~ "*",
+      TRUE                ~ "ns"
+    )
+    norm_str <- sprintf("%s p = %s [%s]",
+      norm_test$name,
+      formatC(norm_test$p, format = "e", digits = 2),
+      sig_label
+    )
+
+    subtitle_txt <- sprintf(
+      "n = %d  |  mean = %.3g  |  sd = %.3g  |  skewness = %.3g  |  normality: %s",
+      n, mu, sigma, skew, norm_str
+    )
+
+    df <- data.frame(x = vals)
+
+    gg <- ggplot2::ggplot(df, ggplot2::aes(x = x)) +
+      ggplot2::geom_histogram(bins = bins,
+        fill = "grey70", colour = "black") +
+      ggplot2::labs(x = col, y = "Count",
+        title = paste0("Distribution of ", col),
+        subtitle = subtitle_txt) +
+      ggplot2::theme_minimal(base_size = 13) +
+      ggplot2::theme(plot.subtitle = ggplot2::element_text(size = 10, colour = "#555"))
+
+    if (isTRUE(input$dist_show_density)) {
+      bw <- diff(range(vals)) / bins
+      gg <- gg +
+        ggplot2::geom_density(ggplot2::aes(y = ggplot2::after_stat(density) * n * bw),
+          colour = "#E15759", linewidth = 1, fill = NA)
+    }
+
+    if (isTRUE(input$dist_show_normal)) {
+      bw  <- diff(range(vals)) / bins
+      xgr <- seq(min(vals), max(vals), length.out = 200)
+      norm_df <- data.frame(x = xgr,
+        y = stats::dnorm(xgr, mu, sigma) * n * bw)
+      gg <- gg +
+        ggplot2::geom_line(data = norm_df, ggplot2::aes(x = x, y = y),
+          colour = "#59A14F", linewidth = 1, linetype = "dashed")
+    }
+    gg
+  })
 
   # ==== Cluster Annotation Engine ====
   
@@ -7567,6 +8068,7 @@ server <- function(input, output, session) {
 
   run_lm <- function() {
     req(rv$meta_sample, rv$frequency_sample, input$lm_outcome, input$lm_predictors)
+    set.seed(as.integer(input$lm_seed %||% 42L))
 
     meta_patient <- rv$meta_sample
     
@@ -7772,6 +8274,7 @@ server <- function(input, output, session) {
       return(list(
         model = model, preds = preds_tbl, null_acc = null_acc,
         split_info = split_info,
+        n_predictors = length(predictors_final),
         run_model_type = input$lm_model_type,
         run_validation = validation,
         run_outcome = input$lm_outcome,
@@ -7851,6 +8354,7 @@ server <- function(input, output, session) {
 
     return(list(
       model = model, preds = preds, null_acc = null_acc,
+      n_predictors = length(predictors_final),
       run_model_type = input$lm_model_type,
       run_validation = validation,
       run_outcome = input$lm_outcome,
@@ -7955,6 +8459,42 @@ server <- function(input, output, session) {
     req(s$roc_plot)
     s$roc_plot
   })
+
+  # Helper: count effective predictors actually used by the model.
+  # Penalized models (glmnet lasso/elasticnet) shrink some coefficients exactly to zero;
+  # those predictors are not used. Ridge (alpha=0) retains all. RF/lm use all.
+  get_effective_n_predictors <- function(res) {
+    np <- res$n_predictors %||% NA_integer_
+    model <- res$model
+    if (is.null(model) || is.null(model$method)) return(np)
+
+    if (identical(model$method, "glmnet")) {
+      alpha_used <- tryCatch(as.numeric(model$bestTune$alpha), error = function(e) NA_real_)
+      # Pure Ridge (alpha=0) does not zero-out coefficients; report input count
+      if (!is.na(alpha_used) && alpha_used == 0) return(np)
+
+      coefs <- tryCatch(
+        coef(model$finalModel, s = model$bestTune$lambda),
+        error = function(e) NULL
+      )
+      if (is.null(coefs)) return(np)
+
+      if (is.list(coefs)) {
+        # Multiclass glmnet: take union of non-zero predictors across all classes
+        used <- unique(unlist(lapply(coefs, function(m) {
+          mat <- as.matrix(m)
+          rownames(mat)[abs(as.numeric(mat)) > 1e-10 & rownames(mat) != "(Intercept)"]
+        })))
+        return(max(1L, length(used)))
+      } else {
+        mat <- as.matrix(coefs)
+        n_nz <- sum(abs(as.numeric(mat)) > 1e-10 & rownames(mat) != "(Intercept)")
+        return(max(1L, n_nz))
+      }
+    }
+
+    return(np)
+  }
 
   build_perf_table <- function(res, rv) {
     req(res, res$preds)
@@ -8120,6 +8660,52 @@ server <- function(input, output, session) {
           Interpretation = "Hand-Till multiclass generalization of AUC", stringsAsFactors = FALSE
         )
       )
+    }
+
+    # --- Model complexity warning (EPV: events per predictor) ---
+    n_pred_input <- res$n_predictors %||% NA_integer_
+    n_pred_lm <- get_effective_n_predictors(res)
+    if (!is.na(n_pred_lm) && n_pred_lm > 0) {
+      obs_counts <- table(preds$obs)
+      n_total_obs <- length(preds$obs)
+      p_label <- if (!is.na(n_pred_input) && n_pred_lm != n_pred_input) {
+        sprintf("effective p=%d (input p=%d)", n_pred_lm, n_pred_input)
+      } else {
+        sprintf("p=%d", n_pred_lm)
+      }
+      if (n_classes == 2) {
+        min_class <- min(obs_counts)
+        epv <- round(min_class / n_pred_lm, 1)
+        epv_interp <- if (epv < 5) {
+          "WARNING: < 5 EPV \u2014 high overfitting risk; model likely unreliable"
+        } else if (epv < 10) {
+          "CAUTION: < 10 EPV \u2014 possible overfitting; consider regularization or fewer predictors"
+        } else {
+          "ADEQUATE: >= 10 EPV \u2014 acceptable events-per-variable ratio"
+        }
+        perf_table <- rbind(perf_table, data.frame(
+          Metric = sprintf("EPV (min class n=%d, %s)", min_class, p_label),
+          Value = as.character(epv),
+          Interpretation = epv_interp,
+          stringsAsFactors = FALSE
+        ))
+      } else {
+        avg_per_class <- round(n_total_obs / n_classes)
+        np_mc <- round(avg_per_class / n_pred_lm, 1)
+        np_mc_interp <- if (np_mc < 5) {
+          "WARNING: < 5 avg samples/class/predictor \u2014 high overfitting risk"
+        } else if (np_mc < 10) {
+          "CAUTION: < 10 avg samples/class/predictor \u2014 possible overfitting"
+        } else {
+          "ADEQUATE: >= 10 avg samples per class per predictor"
+        }
+        perf_table <- rbind(perf_table, data.frame(
+          Metric = sprintf("Avg samples/class/predictor (n=%d, %s)", n_total_obs, p_label),
+          Value = as.character(np_mc),
+          Interpretation = np_mc_interp,
+          stringsAsFactors = FALSE
+        ))
+      }
     }
 
     if (!is.null(res$split_info)) {
@@ -8561,6 +9147,7 @@ server <- function(input, output, session) {
 
   run_reg <- function() {
     req(rv$meta_sample, rv$frequency_sample, input$reg_outcome, input$reg_predictors)
+    set.seed(as.integer(input$reg_seed %||% 42L))
 
     meta_patient <- rv$meta_sample
     
@@ -8814,6 +9401,7 @@ server <- function(input, output, session) {
       return(list(
         model = model, preds = preds_tbl, null_rmse = null_rmse,
         split_info = split_info,
+        n_predictors = length(predictors_final),
         run_model_type = input$reg_model_type,
         run_validation = validation,
         run_outcome = input$reg_outcome,
@@ -8952,6 +9540,7 @@ server <- function(input, output, session) {
 
     return(list(
       model = model, preds = preds_tbl, null_rmse = null_rmse,
+      n_predictors = length(predictors_final),
       run_model_type = input$reg_model_type,
       run_validation = validation,
       run_outcome = input$reg_outcome,
@@ -9048,6 +9637,25 @@ server <- function(input, output, session) {
     s$residual_plot
   })
 
+  output$reg_qq_plot <- renderPlot({
+    s <- reg_state()
+    req(s)
+    if (!is.null(s$error) && isTRUE(s$error)) return(NULL)
+    preds <- s$preds
+    req(preds)
+    residuals <- preds$obs - preds$pred
+    resid_df <- data.frame(residual = residuals)
+    ggplot2::ggplot(resid_df, ggplot2::aes(sample = residual)) +
+      ggplot2::stat_qq(alpha = 0.6, size = 2) +
+      ggplot2::stat_qq_line(color = "red", linetype = "dashed") +
+      ggplot2::labs(
+        title = "Normal Q-Q Plot of Residuals",
+        subtitle = "Points on the dashed line = normally distributed; systematic deviation = non-normality",
+        x = "Theoretical Quantiles", y = "Sample Quantiles"
+      ) +
+      ggplot2::theme_minimal(base_size = 14)
+  })
+
   build_reg_perf_table <- function(res) {
     req(res, res$preds)
     preds <- res$preds
@@ -9055,6 +9663,7 @@ server <- function(input, output, session) {
 
     obs <- preds$obs
     pred <- preds$pred
+    residuals <- obs - pred
 
     # Calculate metrics
     rmse <- sqrt(mean((obs - pred)^2, na.rm = TRUE))
@@ -9077,13 +9686,107 @@ server <- function(input, output, session) {
         sprintf("%.3f", r_squared),
         sprintf("%.3f", cor_val)
       ),
+      Interpretation = c(
+        "RMSE if always predicting the mean (baseline); model should be lower",
+        "Root mean squared error of predictions; lower is better; same units as outcome",
+        "Mean absolute error; more robust to outliers than RMSE; lower is better",
+        "Proportion of outcome variance explained; 1=perfect fit, 0=no improvement over baseline",
+        "Pearson correlation between observed and predicted values; 1=perfect, 0=no linear relationship"
+      ),
       stringsAsFactors = FALSE
     )
+
+    # --- Model complexity warning (observations per predictor) ---
+    n_obs <- nrow(preds)
+    n_pred_input <- res$n_predictors %||% NA_integer_
+    n_pred <- get_effective_n_predictors(res)
+    if (!is.na(n_pred) && n_pred > 0) {
+      p_label <- if (!is.na(n_pred_input) && n_pred != n_pred_input) {
+        sprintf("effective p=%d (input p=%d)", n_pred, n_pred_input)
+      } else {
+        sprintf("p=%d", n_pred)
+      }
+      np_ratio <- round(n_obs / n_pred, 1)
+      np_interp <- if (np_ratio < 5) {
+        "WARNING: < 5 obs/predictor \u2014 high overfitting risk; model likely unreliable"
+      } else if (np_ratio < 10) {
+        "CAUTION: < 10 obs/predictor \u2014 possible overfitting; consider penalized regression"
+      } else if (np_ratio < 20) {
+        "ADEQUATE: 10\u201320 obs/predictor \u2014 acceptable; more data is preferable"
+      } else {
+        "GOOD: \u2265 20 obs/predictor \u2014 low overfitting risk for this predictor count"
+      }
+      perf_table <- rbind(perf_table, data.frame(
+        Metric = sprintf("Obs per predictor (n=%d, %s)", n_obs, p_label),
+        Value = as.character(np_ratio),
+        Interpretation = np_interp,
+        stringsAsFactors = FALSE
+      ))
+    }
+
+    # --- Homoskedasticity check (Spearman rank corr of |residuals| vs fitted) ---
+    # H0: residual magnitude is independent of fitted value (homoskedastic).
+    # Significant p-value suggests heteroskedasticity.
+    spear_test <- tryCatch(
+      suppressWarnings(cor.test(abs(residuals), pred, method = "spearman")),
+      error = function(e) NULL
+    )
+    if (!is.null(spear_test)) {
+      sp_rho <- round(as.numeric(spear_test$estimate), 3)
+      sp_p <- spear_test$p.value
+      sp_p_fmt <- if (is.na(sp_p)) NA_character_ else if (sp_p < 0.001) formatC(sp_p, format = "e", digits = 2) else as.character(signif(sp_p, 3))
+      sp_interp <- if (is.na(sp_p) || sp_p > 0.05) {
+        "PASS: No significant pattern between |residuals| and fitted \u2014 homoskedasticity assumption likely satisfied"
+      } else if (sp_p > 0.01) {
+        "MARGINAL (p<0.05): Possible mild heteroskedasticity \u2014 predictions may be less reliable at extreme outcome values"
+      } else {
+        "FAIL (p<0.01): Significant heteroskedasticity \u2014 residual variance changes with fitted values; consider log-transforming the outcome"
+      }
+      perf_table <- rbind(perf_table, data.frame(
+        Metric = "Homoskedasticity (Spearman |resid| vs fitted)",
+        Value = sprintf("\u03c1=%.3f, p=%s", sp_rho, sp_p_fmt),
+        Interpretation = sp_interp,
+        stringsAsFactors = FALSE
+      ))
+    }
+
+    # --- Residual normality (Shapiro-Wilk, n <= 5000) ---
+    # Normality of residuals is needed for valid CIs and p-values from linear models.
+    sw_n <- sum(!is.na(residuals))
+    if (sw_n >= 3 && sw_n <= 5000) {
+      sw_result <- tryCatch(shapiro.test(residuals[!is.na(residuals)]), error = function(e) NULL)
+      if (!is.null(sw_result)) {
+        sw_p <- sw_result$p.value
+        sw_p_fmt <- if (is.na(sw_p)) NA_character_ else if (sw_p < 0.001) formatC(sw_p, format = "e", digits = 2) else as.character(signif(sw_p, 3))
+        sw_interp <- if (!is.na(sw_p) && sw_p > 0.05) {
+          "PASS: Residuals appear normally distributed \u2014 CIs and p-values from linear models are reliable"
+        } else {
+          "FAIL: Residuals deviate from normality \u2014 inference (CIs, p-values) may be unreliable; inspect the Q-Q plot below"
+        }
+        perf_table <- rbind(perf_table, data.frame(
+          Metric = "Residual normality (Shapiro-Wilk)",
+          Value = sprintf("W=%.3f, p=%s", as.numeric(sw_result$statistic), sw_p_fmt),
+          Interpretation = sw_interp,
+          stringsAsFactors = FALSE
+        ))
+      }
+    } else if (sw_n > 5000) {
+      perf_table <- rbind(perf_table, data.frame(
+        Metric = "Residual normality",
+        Value = sprintf("(n=%d; Shapiro-Wilk skipped)", sw_n),
+        Interpretation = "Shapiro-Wilk not run for n > 5000; assess residual normality via the Q-Q plot",
+        stringsAsFactors = FALSE
+      ))
+    }
 
     if (!is.null(res$split_info)) {
       extra_rows <- data.frame(
         Metric = c("Train size", "Test size"),
         Value = c(res$split_info$n_train, res$split_info$n_test),
+        Interpretation = c(
+          "Number of samples used for training",
+          "Number of samples used for testing"
+        ),
         stringsAsFactors = FALSE
       )
       perf_table <- rbind(perf_table, extra_rows)
@@ -9093,6 +9796,11 @@ server <- function(input, output, session) {
     extra_rows2 <- data.frame(
       Metric = c("Samples before filtering", "Samples after filtering", "Samples dropped"),
       Value = c(det$samples_before, det$samples_after, det$samples_dropped),
+      Interpretation = c(
+        "Count of samples before any filtering",
+        "Count of samples after filtering applied",
+        "Number of samples removed by filtering"
+      ),
       stringsAsFactors = FALSE
     )
     perf_table <- rbind(perf_table, extra_rows2)
@@ -9102,6 +9810,7 @@ server <- function(input, output, session) {
         data.frame(
           Metric = "Dropped patient_IDs",
           Value = paste(unique(det$dropped_ids), collapse = ", "),
+          Interpretation = "List of patient_IDs removed by filtering",
           stringsAsFactors = FALSE
         )
       )
@@ -10905,6 +11614,7 @@ server <- function(input, output, session) {
   # Main time to event analysis function
   run_surv <- function() {
     req(rv$meta_sample, rv$frequency_sample, input$surv_outcome, input$surv_predictors)
+    set.seed(as.integer(input$surv_seed %||% 42L))
     
     # Get analysis mode
     analysis_mode <- input$surv_analysis_mode %||% "multivariate"
@@ -12564,6 +13274,10 @@ server <- function(input, output, session) {
         collections = list(
           cluster_collections = isolate(rv$cluster_collections)
         ),
+        derived = list(
+          feature_transforms  = isolate(rv$feature_transforms),
+          feature_derivations = isolate(rv$feature_derivations)
+        ),
         sccomp = list(
           entity = isolate(input$sccomp_entity) %||% "Clusters",
           formula_mode = isolate(input$sccomp_formula_mode) %||% "simple",
@@ -12631,7 +13345,8 @@ server <- function(input, output, session) {
           lm_alpha                = isolate(input$lm_alpha) %||% 0.5,
           lm_validation           = isolate(input$lm_validation) %||% "Train/Test split",
           lm_train_frac           = isolate(input$lm_train_frac) %||% 0.7,
-          lm_k                    = isolate(input$lm_k) %||% 5L
+          lm_k                    = isolate(input$lm_k) %||% 5L,
+          lm_seed                 = isolate(input$lm_seed) %||% 42L
         ),
         regression = list(
           reg_entity               = isolate(input$reg_entity) %||% "Clusters",
@@ -12645,7 +13360,8 @@ server <- function(input, output, session) {
           reg_alpha                = isolate(input$reg_alpha) %||% 0.5,
           reg_validation           = isolate(input$reg_validation) %||% "Train/Test split",
           reg_train_frac           = isolate(input$reg_train_frac) %||% 0.7,
-          reg_k                    = isolate(input$reg_k) %||% 5L
+          reg_k                    = isolate(input$reg_k) %||% 5L,
+          reg_seed                 = isolate(input$reg_seed) %||% 42L
         ),
         time_to_event = list(
           surv_entity              = isolate(input$surv_entity) %||% "Clusters",
@@ -12665,7 +13381,8 @@ server <- function(input, output, session) {
           surv_split_method        = isolate(input$surv_split_method) %||% "median",
           surv_show_ci             = isTRUE(isolate(input$surv_show_ci)),
           surv_color_low_risk      = isolate(input$surv_color_low_risk) %||% "#87CEEB",
-          surv_color_high_risk     = isolate(input$surv_color_high_risk) %||% "#FF69B4"
+          surv_color_high_risk     = isolate(input$surv_color_high_risk) %||% "#FF69B4",
+          surv_seed                = isolate(input$surv_seed) %||% 42L
         )
       )
       jsonlite::write_json(state, file, auto_unbox = TRUE, pretty = TRUE, null = "null")
@@ -12679,6 +13396,80 @@ server <- function(input, output, session) {
 
     tryCatch({
       state <- jsonlite::read_json(fp, simplifyVector = FALSE)
+
+      # === Derived features (must be restored before coercions so columns exist) ===
+      drv <- state$derived %||% list()
+
+      saved_transforms <- drv$feature_transforms %||% list()
+      for (tid in names(saved_transforms)) {
+        spec     <- saved_transforms[[tid]]
+        new_col  <- as.character(spec$new_col %||% "")
+        src      <- as.character(spec$source   %||% "")
+        trtype   <- as.character(spec$transform %||% "log")
+        base_val <- if (!is.null(spec$base)) as.numeric(spec$base) else NULL
+        shift_val <- as.integer(spec$shift %||% 0L)
+        if (nzchar(new_col) && nzchar(src) &&
+            src %in% names(rv$meta_cached) &&
+            !new_col %in% names(rv$meta_cached)) {
+          col_data <- tryCatch(
+            apply_transform_fn(rv$meta_cached[[src]], trtype, base_val, shift_val),
+            error = function(e) NULL
+          )
+          if (!is.null(col_data)) {
+            add_derived_col_to_rv(new_col, col_data)
+            clean_tid <- gsub("[^A-Za-z0-9]", "", tid)
+            rv$feature_transforms[[clean_tid]] <- list(
+              id = clean_tid, source = src, transform = trtype,
+              base = base_val, shift = shift_val, new_col = new_col
+            )
+            setup_transform_remove(clean_tid)
+          }
+        }
+      }
+
+      saved_derivations <- drv$feature_derivations %||% list()
+      for (did in names(saved_derivations)) {
+        spec    <- saved_derivations[[did]]
+        new_col <- as.character(spec$new_col %||% "")
+        colA    <- as.character(spec$colA %||% "")
+        colB    <- as.character(spec$colB %||% "")
+        op      <- as.character(spec$op   %||% "/")
+        if (nzchar(new_col) && nzchar(colA) && nzchar(colB) &&
+            colA %in% names(rv$meta_cached) &&
+            colB %in% names(rv$meta_cached) &&
+            !new_col %in% names(rv$meta_cached)) {
+          col_data <- tryCatch(
+            apply_derivation_fn(rv$meta_cached[[colA]], rv$meta_cached[[colB]], op),
+            error = function(e) NULL
+          )
+          if (!is.null(col_data)) {
+            add_derived_col_to_rv(new_col, col_data)
+            clean_did <- gsub("[^A-Za-z0-9]", "", did)
+            rv$feature_derivations[[clean_did]] <- list(
+              id = clean_did, colA = colA, op = op, colB = colB, new_col = new_col
+            )
+            setup_derivation_remove(clean_did)
+          }
+        }
+      }
+
+      n_restored <- length(saved_transforms) + length(saved_derivations)
+      if (n_restored > 0) {
+        # Advance counters past the highest restored ID so new additions don't collide
+        restored_t_ids <- suppressWarnings(as.integer(names(rv$feature_transforms)))
+        max_t <- if (length(restored_t_ids) > 0) max(restored_t_ids, na.rm = TRUE) else 0L
+        transform_id_counter(max(transform_id_counter(), max_t))
+
+        restored_d_ids <- suppressWarnings(as.integer(names(rv$feature_derivations)))
+        max_d <- if (length(restored_d_ids) > 0) max(restored_d_ids, na.rm = TRUE) else 0L
+        derivation_id_counter(max(derivation_id_counter(), max_d))
+
+        showNotification(
+          paste0("Restored ", length(saved_transforms), " transform(s) and ",
+                 length(saved_derivations), " derivation(s)."),
+          type = "message", duration = 4
+        )
+      }
 
       # === Features ===
       feat <- state$features %||% list()
@@ -12880,8 +13671,9 @@ server <- function(input, output, session) {
       if (!is.null(lm_s$lm_regularization_alpha)) updateSliderInput(session,   "lm_regularization_alpha", value    = as.numeric(lm_s$lm_regularization_alpha))
       if (!is.null(lm_s$lm_alpha))                updateSliderInput(session,   "lm_alpha",                value    = as.numeric(lm_s$lm_alpha))
       if (!is.null(lm_s$lm_validation))           updateRadioButtons(session,  "lm_validation",           selected = as.character(lm_s$lm_validation))
-      if (!is.null(lm_s$lm_train_frac))           updateSliderInput(session,   "lm_train_frac",           value    = as.numeric(lm_s$lm_train_frac))
-      if (!is.null(lm_s$lm_k))                    updateNumericInput(session,  "lm_k",                    value    = as.integer(lm_s$lm_k))
+      if (!is.null(lm_s$lm_train_frac)) updateSliderInput(session,   "lm_train_frac",           value    = as.numeric(lm_s$lm_train_frac))
+      if (!is.null(lm_s$lm_k))          updateNumericInput(session,  "lm_k",                    value    = as.integer(lm_s$lm_k))
+      if (!is.null(lm_s$lm_seed))       updateNumericInput(session,  "lm_seed",                 value    = as.integer(lm_s$lm_seed))
 
       # === Regression tab ===
       reg_s <- state$regression %||% list()
@@ -12896,8 +13688,9 @@ server <- function(input, output, session) {
       if (!is.null(reg_s$reg_regularization_alpha)) updateSliderInput(session,   "reg_regularization_alpha", value    = as.numeric(reg_s$reg_regularization_alpha))
       if (!is.null(reg_s$reg_alpha))                updateSliderInput(session,   "reg_alpha",                value    = as.numeric(reg_s$reg_alpha))
       if (!is.null(reg_s$reg_validation))           updateRadioButtons(session,  "reg_validation",           selected = as.character(reg_s$reg_validation))
-      if (!is.null(reg_s$reg_train_frac))           updateSliderInput(session,   "reg_train_frac",           value    = as.numeric(reg_s$reg_train_frac))
-      if (!is.null(reg_s$reg_k))                    updateNumericInput(session,  "reg_k",                    value    = as.integer(reg_s$reg_k))
+      if (!is.null(reg_s$reg_train_frac)) updateSliderInput(session,   "reg_train_frac",           value    = as.numeric(reg_s$reg_train_frac))
+      if (!is.null(reg_s$reg_k))          updateNumericInput(session,  "reg_k",                    value    = as.integer(reg_s$reg_k))
+      if (!is.null(reg_s$reg_seed))       updateNumericInput(session,  "reg_seed",                 value    = as.integer(reg_s$reg_seed))
 
       # === Time to Event tab ===
       tte <- state$time_to_event %||% list()
@@ -12923,6 +13716,7 @@ server <- function(input, output, session) {
       surv_ch <- as.character(tte$surv_color_high_risk %||% "")
       if (nzchar(surv_cl)) colourpicker::updateColourInput(session, "surv_color_low_risk",  value = surv_cl)
       if (nzchar(surv_ch)) colourpicker::updateColourInput(session, "surv_color_high_risk", value = surv_ch)
+      if (!is.null(tte$surv_seed)) updateNumericInput(session, "surv_seed", value = as.integer(tte$surv_seed))
 
       # === Deferred: renderUI-based pickers (collections + dynamic test-type radios) ===
       # These widgets are generated by renderUI and don't exist in the DOM at the

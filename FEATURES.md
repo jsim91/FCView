@@ -6,7 +6,7 @@
 |---|---|
 | Home | Upload data, dataset overview, metadata preview, session state save/restore |
 | Subsetting | Pairing variable, subsetting rules, incomplete pair trimming, data export |
-| Edit Features | Feature visibility, type coercion, feature transforms, feature derivations, distribution preview |
+| Edit Features | Feature visibility, type coercion, feature transforms, feature derivations, N-level interval categorization, distribution preview |
 | UMAP | Embedding visualization and faceting |
 | tSNE | Embedding visualization and faceting |
 | Annotation | Cluster heatmap and cluster-to-celltype annotation engine |
@@ -89,13 +89,17 @@
 
 #### Categorize a Feature
 
-- **Purpose**: convert a continuous feature into a two-class categorical feature using a numeric threshold — e.g. `ifelse(hai_d0_titer >= 4, "Responder", "Non-responder")`.
-- **Inputs**: source feature (continuous only), threshold value, label for values ≥ threshold, label for values < threshold.
-- **Output Naming**: `<source>_cat_<threshold>` where the threshold string is sanitized (`.` → `p`, leading `-` → `neg`); e.g. `hai_d0_titer_cat_4`, `score_cat_4p5`, `delta_cat_neg1`.
+- **Purpose**: convert a continuous numeric feature into an N-level ordered categorical feature by defining a set of interval boundaries — e.g. classify HbA1c into `"no_diabetes"`, `"pre_diabetes"`, `"diabetes"` using two thresholds.
+- **Interval Builder**: a dynamic row-based UI where each non-last row specifies an exclusive upper bound and a category label; the last row is unbounded (captures all remaining values). Rows can be added or removed; a minimum of two categories (one boundary) is required.
+- **Snap-to Controls**: each upper bound row includes a dropdown to snap the bound to a data-driven statistic computed from the selected source feature: Median (50%), Mean, Q1 (25%), Q3 (75%), 33rd percentile, 67th percentile. After snapping, the dropdown resets to "Custom" so the label accurately reflects the editable state.
+- **Inline Validation**: the Interval column shows a red warning immediately when any row's upper bound is ≤ the previous row's bound (out-of-order), giving instant visual feedback before the feature is committed.
+- **Output Naming**: `<source>_cat_<N>lvl` where N is the number of categories (e.g. `hba1c_cat_3lvl`).
 - **NA Preservation**: rows where the source feature is `NA` remain `NA` in the new column.
-- **Validation**: both class labels must be non-empty and different from each other; a column with the derived name must not already exist.
-- **Result**: the new column is a character vector; it will appear in categorical pickers throughout the app (Subsetting, Testing, Classification, etc.) and can be used immediately as an outcome or grouping variable.
-- **Active Categorizations List**: each categorization is listed showing the threshold rule and both class labels, with a remove button.
+- **Commit Validation**: upper bounds must be strictly increasing; all labels must be non-empty and unique; a column with the derived name must not already exist.
+- **Implementation**: uses `cut(..., right = FALSE, include.lowest = TRUE)` with `breaks = c(-Inf, <user bounds>, Inf)` so intervals are left-closed: `[lower, upper)`.
+- **Result**: the new column is a character vector and immediately appears in all categorical pickers throughout the app (Subsetting, Testing, Classification, etc.).
+- **Active Categorizations List**: each committed categorization is listed showing the full interval rule string (e.g. `< 5.7 → 'no_diabetes'; 5.7 to < 6.5 → 'pre_diabetes'; ≥ 6.5 → 'diabetes'`) and a remove button.
+- **Session Save/Restore**: categorizations are saved as `{source, breaks, labels}` triplets and reconstructed on restore; the old binary format (`threshold / above_label / below_label`) is automatically migrated on load for backward compatibility.
 
 #### Preview Feature Distribution
 

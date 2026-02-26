@@ -1199,30 +1199,22 @@ ui <- navbarPage(
     uiOutput("derivations_list_ui"),
     hr(),
     h3("Categorize a Feature"),
-    helpText("Create a binary categorical feature from a numeric threshold. Values \u2265 threshold receive the first label; values < threshold receive the second label."),
+    helpText("Split a numeric feature into N ordered categories using custom thresholds. Each interval is left-closed (\u2265 lower bound, < upper bound). Define an upper bound for each row except the last, which captures all remaining values. Labels must be non-empty and unique."),
     fluidRow(
       column(3, uiOutput("categorize_col_ui")),
-      column(2,
-        numericInput("categorize_threshold", "Threshold (\u2265)", value = 0)
-      ),
-      column(2,
-        textInput("categorize_above_label", "\u2265 threshold label", value = "High")
-      ),
-      column(2,
-        textInput("categorize_below_label", "< threshold label", value = "Low")
-      ),
-      column(2,
+      column(4,
         tags$label("New feature name"),
         textOutput("categorize_name_preview")
       ),
-      column(1,
+      column(3,
         br(),
         conditionalPanel(
           condition = "output.dataReady",
-          actionButton("add_categorize_btn", "Add", icon = icon("plus"), class = "btn-primary btn-sm")
+          actionButton("add_categorize_btn", "Add feature", icon = icon("check"), class = "btn-primary btn-sm")
         )
       )
     ),
+    uiOutput("cat_intervals_builder_ui"),
     uiOutput("categorizations_list_ui"),
     hr(),
     h3("Preview Feature Distribution"),
@@ -1324,7 +1316,6 @@ ui <- navbarPage(
         9,
         conditionalPanel(
           condition = "output.hasResults",
-          h4("Test Results"),
           uiOutput("test_error_msg"),
           tableOutput("test_table")
         ),
@@ -1370,7 +1361,6 @@ ui <- navbarPage(
         9,
         conditionalPanel(
           condition = "output.hasCatResults",
-          h4("Categorical Plots"),
           uiOutput("cat_error_msg"),
           plotOutput("categorical_plot")
         ),
@@ -1406,7 +1396,6 @@ ui <- navbarPage(
         9,
         conditionalPanel(
           condition = "output.hasContResults",
-          h4("Continuous Plots"),
           plotOutput("continuous_plot")
         ),
         textOutput("cont_cleared_msg")
@@ -1449,9 +1438,7 @@ ui <- navbarPage(
         7,
         conditionalPanel(
           condition = "output.hasFSResults",
-          h4("Summary Plot"),
           uiOutput("fs_plot_ui"),
-          h4("Details"),
           verbatimTextOutput("fs_summary")
         ),
         textOutput("fs_cleared_msg")
@@ -1460,7 +1447,6 @@ ui <- navbarPage(
         3,
         conditionalPanel(
           condition = "output.hasFSResults",
-          h4("Selected Features"),
           tableOutput("fs_results")
         )
       )
@@ -1543,17 +1529,14 @@ ui <- navbarPage(
         7,
         conditionalPanel(
           condition = "output.hasLMResults",
-          h4("ROC Curve"),
           plotOutput("lm_roc_plot", height = "500px"),
           fluidRow(
             column(
               4,
-              h4("Model Summary"),
               verbatimTextOutput("lm_summary")
             ),
             column(
               8,
-              h4("Performance Metrics"),
               tableOutput("lm_perf_table")
             )
           )
@@ -1564,7 +1547,6 @@ ui <- navbarPage(
         3,
         conditionalPanel(
           condition = "output.hasLMResults",
-          h4("Model Features"),
           tableOutput("lm_features")
         )
       )
@@ -1650,30 +1632,24 @@ ui <- navbarPage(
           fluidRow(
             column(
               4,
-              h4("Observed vs Predicted"),
               plotOutput("reg_obs_pred_plot", height = "350px")
             ),
             column(
               4,
-              h4("Residuals vs Fitted"),
               plotOutput("reg_residual_plot", height = "350px")
             ),
             column(
               4,
-              h4("Residual Q-Q Plot"),
-              helpText("Points on the red line = normally distributed residuals."),
               plotOutput("reg_qq_plot", height = "350px")
             )
           ),
           fluidRow(
             column(
               4,
-              h4("Model Summary"),
               verbatimTextOutput("reg_summary")
             ),
             column(
               8,
-              h4("Performance Metrics"),
               tableOutput("reg_perf_table")
             )
           )
@@ -1959,7 +1935,6 @@ ui <- navbarPage(
         5,
         conditionalPanel(
           condition = "output.hasSurvResults",
-          h4("Time to Event Curve"),
           plotOutput("surv_curve_plot", height = "500px"),
           h4("Model Summary"),
           verbatimTextOutput("surv_summary"),
@@ -2036,6 +2011,11 @@ server <- function(input, output, session) {
   transform_id_counter <- reactiveVal(0) # Counter for unique transform IDs
   derivation_id_counter <- reactiveVal(0) # Counter for unique derivation IDs
   categorization_id_counter <- reactiveVal(0) # Counter for unique categorization IDs
+  cat_interval_rows   <- reactiveVal(list(     # Builder rows for the N-interval editor
+    list(uid = 1L, bound = 0, label = "Low",  snap = "custom"),
+    list(uid = 2L,             label = "High", snap = "custom")
+  ))
+  cat_row_uid_counter <- reactiveVal(2L)       # Highest UID assigned so far in builder
   # rv$log <- reactiveVal(character())
 
   # Disable tabs at startup
@@ -3526,6 +3506,76 @@ server <- function(input, output, session) {
       choices = continuous_available_cols() %||% character(0))
   })
 
+  output$cat_intervals_builder_ui <- renderUI({
+    rows <- cat_interval_rows()
+    n    <- length(rows)
+    snap_choices <- c(
+      "Custom"          = "custom",
+      "Median (50%)"    = "median",
+      "Mean"            = "mean",
+      "Q1 (25%)"        = "q25",
+      "Q3 (75%)"        = "q75",
+      "33rd percentile" = "p33",
+      "67th percentile" = "p67"
+    )
+    row_uis <- lapply(seq_along(rows), function(i) {
+      r        <- rows[[i]]
+      is_last  <- i == n
+      uid_str  <- as.character(r$uid)
+      show_hdr <- i == 1
+      bound_ui <- if (!is_last) {
+        column(3, tagList(
+          numericInput(paste0("cat_bound_", uid_str),
+            if (show_hdr) "Upper bound (exclusive)" else NULL,
+            value = r$bound %||% 0, width = "100%"),
+          selectInput(paste0("cat_snap_", uid_str), NULL,
+            choices = snap_choices, selected = r$snap %||% "custom",
+            width = "100%")
+        ))
+      } else {
+        column(3, tagList(
+          if (show_hdr) tags$label("Upper bound (exclusive)") else NULL,
+          tags$p(style = "margin-top: 5px; color: #666; font-style: italic;",
+            "\u221e (last category, no upper bound)")
+        ))
+      }
+      interval_txt <- if (i == 1) {
+        paste0("< ", r$bound %||% "?")
+      } else if (is_last) {
+        paste0("\u2265 ", rows[[i - 1L]]$bound %||% "?")
+      } else {
+        paste0(rows[[i - 1L]]$bound %||% "?", " to < ", r$bound %||% "?")
+      }
+      # Flag out-of-order bounds with red text
+      prev_b <- if (i > 1 && !is_last) rows[[i - 1L]]$bound else NULL
+      curr_b <- if (!is_last) r$bound else NULL
+      intv_bad  <- !is.null(prev_b) && !is.null(curr_b) &&
+                   !is.na(prev_b)   && !is.na(curr_b)   && curr_b <= prev_b
+      intv_style <- if (intv_bad)
+        "color:#cc0000; font-weight:bold; font-style:italic; margin-top:5px;"
+      else "color:#555; font-style:italic; margin-top:5px;"
+      intv_label <- if (intv_bad) paste0(interval_txt, " \u26a0 out of order") else interval_txt
+      intv_col  <- column(3, tagList(
+        if (show_hdr) tags$label("Interval") else NULL,
+        tags$p(style = intv_style, intv_label)))
+      label_ui  <- column(4, textInput(paste0("cat_label_", uid_str),
+        if (show_hdr) "Category label" else NULL,
+        value = r$label %||% "", width = "100%"))
+      remove_ui <- if (n > 2) {
+        column(2, actionButton(paste0("cat_remove_row_", uid_str), "",
+          icon = icon("times"), class = "btn-danger btn-xs",
+          style = if (show_hdr) "margin-top: 22px;" else "margin-top: 2px;"))
+      } else column(2)
+      fluidRow(style = "margin-bottom: 4px;", bound_ui, intv_col, label_ui, remove_ui)
+    })
+    tagList(
+      tags$div(style = "margin-top: 8px;", row_uis),
+      actionButton("add_cat_interval_btn", "Add category",
+        icon = icon("plus"), class = "btn-default btn-sm",
+        style = "margin-top: 6px;")
+    )
+  })
+
   # ---- Name preview outputs ----
   output$transform_name_preview <- renderText({
     src  <- input$transform_source %||% ""; if (!nzchar(src)) return("\u2014")
@@ -3548,11 +3598,10 @@ server <- function(input, output, session) {
   })
 
   output$categorize_name_preview <- renderText({
-    src <- input$categorize_source    %||% ""
-    thr <- input$categorize_threshold %||% 0
+    src <- input$categorize_source %||% ""
     if (!nzchar(src)) return("\u2014")
-    thr_str <- gsub("\\.", "p", sub("^-", "neg", as.character(thr)))
-    paste0(src, "_cat_", thr_str)
+    n <- length(cat_interval_rows())
+    paste0(src, "_cat_", n, "lvl")
   })
 
   # ---- Per-entry remove observers (set up on add and on state restore) ----
@@ -3600,6 +3649,104 @@ server <- function(input, output, session) {
       }, ignoreInit = TRUE, once = TRUE)
     })
   }
+
+  # Remove observer for a single builder row (by stable UID)
+  setup_cat_row_remove <- function(uid) {
+    local({
+      local_uid <- uid
+      observeEvent(input[[paste0("cat_remove_row_", local_uid)]], {
+        rows <- cat_interval_rows()
+        if (length(rows) <= 2) return()
+        idx <- which(vapply(rows, function(r) identical(r$uid, local_uid), logical(1)))
+        if (length(idx) == 0) return()
+        was_last <- idx == length(rows)
+        rows[[idx]] <- NULL
+        # If the last row was removed, strip the bound from the new last row
+        if (was_last && length(rows) > 0) rows[[length(rows)]]$bound <- NULL
+        cat_interval_rows(rows)
+      }, ignoreInit = TRUE, once = TRUE)
+    })
+  }
+
+  # Initialise remove observers for the two default builder rows
+  setup_cat_row_remove(1L)
+  setup_cat_row_remove(2L)
+
+  # Snap-to observer: updates the bound numericInput when a snap option is chosen
+  setup_cat_snap_observer <- function(uid) {
+    local({
+      local_uid <- uid
+      snap_id   <- paste0("cat_snap_",  local_uid)
+      bound_id  <- paste0("cat_bound_", local_uid)
+      observeEvent(input[[snap_id]], {
+        snap_val <- input[[snap_id]]
+        if (is.null(snap_val) || snap_val == "custom") return()
+        src <- isolate(input$categorize_source) %||% ""
+        if (!nzchar(src) || is.null(rv$meta_cached) ||
+            !src %in% names(rv$meta_cached)) {
+          showNotification("Select a source feature first.", type = "warning", duration = 3)
+          return()
+        }
+        vals <- as.numeric(rv$meta_cached[[src]])
+        vals <- vals[!is.na(vals)]
+        computed <- switch(snap_val,
+          median = stats::median(vals),
+          mean   = mean(vals),
+          q25    = unname(stats::quantile(vals, 0.25)),
+          q75    = unname(stats::quantile(vals, 0.75)),
+          p33    = unname(stats::quantile(vals, 1/3)),
+          p67    = unname(stats::quantile(vals, 2/3)),
+          NULL
+        )
+        if (!is.null(computed)) {
+          updateNumericInput(session, bound_id, value = round(computed, 4))
+          updateSelectInput(session, snap_id, selected = "custom")
+          # Also update the stored snap so sync_cat_rows preserves "custom"
+          rows <- isolate(cat_interval_rows())
+          idx  <- which(vapply(rows, function(r) identical(r$uid, local_uid), logical(1)))
+          if (length(idx) > 0) { rows[[idx]]$snap <- "custom"; cat_interval_rows(rows) }
+        }
+      }, ignoreInit = TRUE)
+    })
+  }
+
+  setup_cat_snap_observer(1L)
+  setup_cat_snap_observer(2L)
+
+  # Read current input values back into cat_interval_rows before structural changes
+  sync_cat_rows <- function() {
+    rows <- isolate(cat_interval_rows())
+    n    <- length(rows)
+    for (i in seq_len(n)) {
+      uid_str <- as.character(rows[[i]]$uid)
+      lv <- isolate(input[[paste0("cat_label_", uid_str)]])
+      if (!is.null(lv)) rows[[i]]$label <- trimws(lv)
+      sv <- isolate(input[[paste0("cat_snap_",  uid_str)]])
+      if (!is.null(sv)) rows[[i]]$snap <- sv
+      if (i < n) {
+        bv <- isolate(input[[paste0("cat_bound_", uid_str)]])
+        if (!is.null(bv)) rows[[i]]$bound <- as.numeric(bv)
+      }
+    }
+    cat_interval_rows(rows)
+  }
+
+  observeEvent(input$add_cat_interval_btn, {
+    sync_cat_rows()
+    rows <- cat_interval_rows()
+    n    <- length(rows)
+    # Give the current last row a default upper bound, then append a new last row
+    prev_bound    <- if (n >= 2) (rows[[n - 1L]]$bound %||% 0) else 0
+    default_bound <- if (!is.null(prev_bound) && !is.na(prev_bound)) prev_bound + 1 else 1
+    rows[[n]]$bound <- default_bound
+    cat_row_uid_counter(cat_row_uid_counter() + 1L)
+    new_uid <- cat_row_uid_counter()
+    rows[[n + 1L]] <- list(uid = new_uid, label = paste0("Level_", n + 1L))
+    cat_interval_rows(rows)
+    # Ensure every current row has a remove and snap observer (safe to call multiple times)
+    for (r in cat_interval_rows()) setup_cat_row_remove(r$uid)
+    setup_cat_snap_observer(new_uid)
+  })
 
   # ---- Add transform ----
   observeEvent(input$add_transform_btn, {
@@ -3687,35 +3834,56 @@ server <- function(input, output, session) {
   # ---- Add categorization ----
   observeEvent(input$add_categorize_btn, {
     req(rv$data_ready, rv$meta_cached)
-    src   <- input$categorize_source    %||% ""
-    thr   <- as.numeric(input$categorize_threshold %||% 0)
-    above <- trimws(input$categorize_above_label   %||% "High")
-    below <- trimws(input$categorize_below_label   %||% "Low")
+    sync_cat_rows()
+    rows <- cat_interval_rows()
+    src  <- input$categorize_source %||% ""
     if (!nzchar(src) || !(src %in% names(rv$meta_cached))) {
       showNotification("Please select a source feature.", type = "warning"); return()
     }
-    if (!nzchar(above) || !nzchar(below)) {
-      showNotification("Please provide labels for both classes.", type = "warning"); return()
+    n <- length(rows)
+    if (n < 2) {
+      showNotification("At least 2 categories (1 threshold) are required.", type = "warning"); return()
     }
-    if (identical(above, below)) {
-      showNotification("The two class labels must be different.", type = "warning"); return()
+    # Extract upper bounds from all rows except the last
+    breaks <- numeric(n - 1L)
+    for (i in seq_len(n - 1L)) {
+      b <- rows[[i]]$bound
+      if (is.null(b) || is.na(b)) {
+        showNotification(paste0("Row ", i, " is missing an upper bound."), type = "warning"); return()
+      }
+      breaks[i] <- b
     }
-    thr_str <- gsub("\\.", "p", sub("^-", "neg", as.character(thr)))
-    new_col <- paste0(src, "_cat_", thr_str)
+    if (n > 2 && any(diff(breaks) <= 0)) {
+      showNotification("Upper bounds must be strictly increasing.", type = "warning"); return()
+    }
+    labels <- vapply(rows, function(r) trimws(r$label %||% ""), character(1))
+    if (any(!nzchar(labels))) {
+      showNotification("All category labels must be non-empty.", type = "warning"); return()
+    }
+    if (anyDuplicated(labels) > 0) {
+      showNotification("Category labels must be unique.", type = "warning"); return()
+    }
+    new_col <- paste0(src, "_cat_", n, "lvl")
     if (new_col %in% names(rv$meta_cached)) {
-      showNotification(paste0("Feature '", new_col, "' already exists."),
-        type = "warning"); return()
+      showNotification(paste0("Feature '", new_col, "' already exists."), type = "warning"); return()
     }
-    vals     <- as.numeric(rv$meta_cached[[src]])
-    col_data <- ifelse(!is.na(vals) & vals >= thr, above, below)
+    vals        <- as.numeric(rv$meta_cached[[src]])
+    breaks_full <- c(-Inf, breaks, Inf)
+    col_data    <- as.character(cut(vals, breaks = breaks_full, labels = labels,
+                                    right = FALSE, include.lowest = TRUE))
     col_data[is.na(vals)] <- NA_character_
     add_derived_col_to_rv(new_col, col_data)
     categorization_id_counter(categorization_id_counter() + 1L)
     cid  <- as.character(categorization_id_counter())
-    spec <- list(id = cid, source = src, threshold = thr,
-                 above_label = above, below_label = below, new_col = new_col)
+    spec <- list(id = cid, source = src, breaks = breaks, labels = labels, new_col = new_col)
     rv$feature_categorizations[[cid]] <- spec
     setup_categorize_remove(cid)
+    # Reset builder to default 2-row state
+    cat_row_uid_counter(2L)
+    cat_interval_rows(list(
+      list(uid = 1L, bound = 0, label = "Low",  snap = "custom"),
+      list(uid = 2L,             label = "High", snap = "custom")
+    ))
     showNotification(paste0("Added categorical feature: ", new_col),
       type = "message", duration = 4)
   })
@@ -3779,15 +3947,27 @@ server <- function(input, output, session) {
       return(tags$p(style = "color:#999; font-style:italic; margin-top:6px;",
         "No categorizations added yet."))
     rows <- lapply(names(cats), function(cid) {
-      spec <- cats[[cid]]
+      spec   <- cats[[cid]]
+      bks    <- spec$breaks %||% numeric(0)
+      lbls   <- spec$labels %||% character(0)
+      n_lvls <- length(lbls)
+      parts  <- character(n_lvls)
+      for (i in seq_len(n_lvls)) {
+        parts[i] <- if (i == 1) {
+          paste0("< ", bks[1], " \u2192 '", lbls[1], "'")
+        } else if (i == n_lvls) {
+          paste0("\u2265 ", bks[n_lvls - 1L], " \u2192 '", lbls[n_lvls], "'")
+        } else {
+          paste0(bks[i - 1L], " to < ", bks[i], " \u2192 '", lbls[i], "'")
+        }
+      }
+      rule_str <- paste(parts, collapse = "; ")
       fluidRow(
         column(10,
           tags$span(icon("arrow-right"), "\u00a0",
             tags$strong(spec$new_col),
             tags$span(style = "color:#666; margin-left:6px;",
-              paste0("(", spec$source, " \u2265 ", spec$threshold,
-                     " \u2192 '", spec$above_label, "'; < ", spec$threshold,
-                     " \u2192 '", spec$below_label, "')"))
+              paste0("(", spec$source, ": ", rule_str, ")"))
           )
         ),
         column(2,
@@ -13579,17 +13759,27 @@ server <- function(input, output, session) {
       saved_categorizations <- drv$feature_categorizations %||% list()
       for (cid in names(saved_categorizations)) {
         spec    <- saved_categorizations[[cid]]
-        new_col <- as.character(spec$new_col     %||% "")
-        src     <- as.character(spec$source      %||% "")
-        thr     <- as.numeric(spec$threshold     %||% 0)
-        above   <- as.character(spec$above_label %||% "High")
-        below   <- as.character(spec$below_label %||% "Low")
+        new_col <- as.character(spec$new_col %||% "")
+        src     <- as.character(spec$source  %||% "")
+        # Support both old binary format (threshold/above_label/below_label) and new N-level format (breaks/labels)
+        if (!is.null(spec$breaks)) {
+          breaks <- as.numeric(spec$breaks)
+          labels <- as.character(spec$labels)
+        } else {
+          thr    <- as.numeric(spec$threshold  %||% 0)
+          above  <- as.character(spec$above_label %||% "High")
+          below  <- as.character(spec$below_label %||% "Low")
+          breaks <- thr
+          labels <- c(below, above)  # below = [< thr), above = [>= thr)
+        }
         if (nzchar(new_col) && nzchar(src) &&
             src %in% names(rv$meta_cached) &&
             !new_col %in% names(rv$meta_cached)) {
-          vals     <- as.numeric(rv$meta_cached[[src]])
-          col_data <- tryCatch({
-            out <- ifelse(!is.na(vals) & vals >= thr, above, below)
+          vals        <- as.numeric(rv$meta_cached[[src]])
+          breaks_full <- c(-Inf, breaks, Inf)
+          col_data    <- tryCatch({
+            out <- as.character(cut(vals, breaks = breaks_full, labels = labels,
+                                    right = FALSE, include.lowest = TRUE))
             out[is.na(vals)] <- NA_character_
             out
           }, error = function(e) NULL)
@@ -13597,8 +13787,7 @@ server <- function(input, output, session) {
             add_derived_col_to_rv(new_col, col_data)
             clean_cid <- gsub("[^A-Za-z0-9]", "", cid)
             rv$feature_categorizations[[clean_cid]] <- list(
-              id = clean_cid, source = src, threshold = thr,
-              above_label = above, below_label = below, new_col = new_col
+              id = clean_cid, source = src, breaks = breaks, labels = labels, new_col = new_col
             )
             setup_categorize_remove(clean_cid)
           }

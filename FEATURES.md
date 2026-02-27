@@ -101,6 +101,17 @@
 - **Active Categorizations List**: each committed categorization is listed showing the full interval rule string (e.g. `< 5.7 → 'no_diabetes'; 5.7 to < 6.5 → 'pre_diabetes'; ≥ 6.5 → 'diabetes'`) and a remove button.
 - **Session Save/Restore**: categorizations are saved as `{source, breaks, labels}` triplets and reconstructed on restore; the old binary format (`threshold / above_label / below_label`) is automatically migrated on load for backward compatibility.
 
+#### Rename a Feature
+
+- **Custom Display Names**: each metadata feature can be assigned a custom display name via the Edit Features tab. The internal column name is preserved unchanged; the display name is purely cosmetic.
+- **Universal Propagation**: all `updatePickerInput` calls throughout every analysis tab (Feature Selection, Classification, Regression, Testing, Categorical, Continuous, sccomp, Time to Event) use `make_labeled_choices()`, which reads `rv$feature_renames` reactively, so renaming a feature instantly updates every dropdown without requiring a manual refresh.
+- **Dummy-Expanded Names**: for categorical features that produce dummy-expanded column names during modeling (e.g. `Age_spec_cat_2lvlolder`), `apply_feature_display_names()` uses a prefix-match fallback — it maps the base column to its display name and appends the level suffix (e.g. → `age groupolder`). Model coefficient tables in Classification, Regression, and TTE tabs therefore show renamed names even for expanded categorical levels.
+- **sccomp Formula & Parameters**: before `sccomp_estimate` is called, renamed formula variables are written to the `sccomp_data` data frame under safe-name equivalents (spaces → underscores) and `formula_str` is updated with word-boundary replacement. The Results Summary formula and the Significant Clusters parameter column reflect custom display names.
+- **TTE Univariate Dropdown**: the "Display results for:" selector shown after a univariate run applies `apply_feature_display_names()` to predictor names so renamed features appear with their display names in the result selector.
+- **`make_labeled_choices(cols)`**: shared helper that returns a named character vector where names are display labels and values are the original column names; used by every picker that lists metadata columns.
+- **`apply_feature_display_names(vec)`**: shared helper that maps a character vector of internal column names to their display names. Supports exact match and prefix-match (for dummy-expanded names); falls back to the original name when no rename is defined.
+- **Session Save/Restore**: `rv$feature_renames` is saved to the session `.json` file as a named list and fully restored on load. All rename textInputs in the Edit Features tab are repopulated on restore and all pickers update immediately.
+
 #### Preview Feature Distribution
 
 - **Source Data**: reads from `rv$meta_sample` (the active subsetted dataset), so the preview always reflects current subsetting rules.
@@ -235,10 +246,11 @@
 
 ### Session Save / Restore
 
-- **Saved State Includes**: active features, hide states, type coercions, pairing variable, subsetting rules, annotations, collections, feature transforms, feature derivations, feature categorizations, and all analysis tab settings (entity, outcome, predictors, model type, validation strategy, regularization, seeds, colors, etc.).
+- **Saved State Includes**: active features, hide states, type coercions, **feature display name renames**, pairing variable, subsetting rules, annotations, collections, feature transforms, feature derivations, feature categorizations, and all analysis tab settings (entity, outcome, predictors, model type, validation strategy, regularization, seeds, colors, etc.).
 - **Seeds Stored**: `lm_seed` (classification), `reg_seed` (regression), `surv_seed` (time-to-event) are saved and restored.
 - **Backward Compatibility**: all fields use `%||%` fallback defaults; sessions saved before a field was added restore cleanly without error.
 - **Restore Order**: derived feature columns are reconstructed before coercions are applied, which is before subsetting rules are evaluated, matching the normal data-flow order.
+- **Rename Restore Race Guard**: a `rv$pending_dropdown_restore` reactiveVal stores the intended `features_dropdown` selection during restore; the `observeEvent(rv$meta_sample)` observer checks and consumes it after coercion re-apply completes, preventing the reactive cascade from clobbering the restored selection.
 - **Controls Location**: Save/Restore buttons are on the Home tab sidebarPanel.
 
 ### User Experience & Robustness

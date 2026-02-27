@@ -1995,7 +1995,9 @@ server <- function(input, output, session) {
     feature_transforms      = list(),
     feature_derivations     = list(),
     feature_categorizations = list(),
-    feature_renames         = list()
+    feature_renames         = list(),
+    # Pending features_dropdown selection to apply after next meta_sample update
+    pending_dropdown_restore = NULL
   )
   cat_plot_cache <- reactiveVal(NULL)
   cont_plot_cache <- reactiveVal(NULL)
@@ -2732,9 +2734,18 @@ server <- function(input, output, session) {
     # Preserve current selection where possible when refreshing choices
     # Exclude patient_ID (and other internal columns) from selectable features
     new_choices <- setdiff(colnames(rv$meta_sample), c("patient_ID", "source", "run_date"))
-    current_sel <- isolate(input$features_dropdown) %||% character(0)
-    # Keep only selections that still exist in new choices
-    sel_to_set <- intersect(current_sel, new_choices)
+
+    # If there is a pending restore selection (set during session restore),
+    # use it and clear it; otherwise preserve whatever is currently selected.
+    pending <- rv$pending_dropdown_restore
+    if (!is.null(pending) && length(pending) > 0) {
+      sel_to_set <- intersect(pending, new_choices)
+      rv$pending_dropdown_restore <- NULL
+    } else {
+      current_sel <- isolate(input$features_dropdown) %||% character(0)
+      sel_to_set <- intersect(current_sel, new_choices)
+    }
+
     if (length(sel_to_set) == 0) sel_to_set <- NULL
     updatePickerInput(session, "features_dropdown", choices = c("", new_choices), selected = sel_to_set)
   })
@@ -13973,7 +13984,10 @@ server <- function(input, output, session) {
       }
 
       # Update features_dropdown — include any renamed features so they appear in
-      # the mini UI table even if they weren't previously selected
+      # the mini UI table even if they weren't previously selected.
+      # Store in rv$pending_dropdown_restore so the observeEvent(rv$meta_sample)
+      # observer (which fires after coercions re-apply) applies the selection
+      # at the right time rather than racing against it.
       saved_feats <- unlist(feat$features_dropdown %||% list())
       renamed_feats <- names(Filter(nzchar, vapply(names(renames), function(nm) {
         trimws(as.character(renames[[nm]] %||% ""))
@@ -13983,9 +13997,12 @@ server <- function(input, output, session) {
         intersect(renamed_feats, rv$all_meta_cols)
       ))
       if (length(feats_to_show) > 0) {
+        # Store pending selection — will be applied by observeEvent(rv$meta_sample)
+        rv$pending_dropdown_restore <- feats_to_show
+        # Also fire an immediate update in case meta_sample won't change again
         updatePickerInput(session, "features_dropdown", selected = feats_to_show)
       }
-      # Also explicitly update rename textInputs (fires after UI re-renders)
+      # Also explicitly update rename textInputs after the UI re-renders
       for (nm in names(renames)) {
         val <- trimws(as.character(renames[[nm]] %||% ""))
         if (nzchar(val)) {

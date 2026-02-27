@@ -5487,10 +5487,23 @@ server <- function(input, output, session) {
   }
 
   # Apply display names to a vector of feature names.
-  # Exact-match only: level-expanded dummy names (e.g. group_Treated) pass through unchanged.
+  # Handles both exact matches and prefix matches for model-expanded dummy names
+  # (e.g. Age_spec_cat_2lvlolder when Age_spec_cat_2lvl -> "age group").
   apply_feature_display_names <- function(vec) {
     if (length(rv$feature_renames) == 0) return(vec)
-    vapply(vec, function(f) rv$feature_renames[[f]] %||% f, character(1), USE.NAMES = FALSE)
+    vapply(vec, function(f) {
+      # 1. Exact match
+      exact <- rv$feature_renames[[f]]
+      if (!is.null(exact)) return(exact)
+      # 2. Prefix match: handles dummy-expanded names like Age_spec_cat_2lvlolder
+      for (orig in names(rv$feature_renames)) {
+        if (startsWith(f, orig)) {
+          suffix <- substring(f, nchar(orig) + 1L)
+          return(paste0(rv$feature_renames[[orig]], suffix))
+        }
+      }
+      f
+    }, character(1), USE.NAMES = FALSE)
   }
 
   # keep choices in sync with data
@@ -11034,6 +11047,41 @@ server <- function(input, output, session) {
                 }
               }
             }
+          }
+        }
+
+        # Apply display name renames to formula variables so the formula and
+        # parameter names in sccomp output reflect the user's custom labels.
+        # Spaces and non-alphanumeric characters are replaced with underscores
+        # to keep column names valid as R identifiers.
+        if (length(rv$feature_renames) > 0) {
+          formula_vars_all <- all.vars(as.formula(formula_str))
+          rename_map <- list()
+          for (fv in formula_vars_all) {
+            dn <- rv$feature_renames[[fv]] %||% ""
+            if (nzchar(dn)) {
+              safe_name <- gsub("[^A-Za-z0-9]", "_", dn)
+              safe_name <- gsub("_+", "_", safe_name)
+              safe_name <- sub("^_+", "", safe_name)
+              safe_name <- sub("_+$", "", safe_name)
+              rename_map[[fv]] <- safe_name
+            }
+          }
+          if (length(rename_map) > 0) {
+            for (orig_name in names(rename_map)) {
+              new_name <- rename_map[[orig_name]]
+              if (orig_name %in% colnames(sccomp_data) && new_name != orig_name) {
+                sccomp_data[[new_name]] <- sccomp_data[[orig_name]]
+                sccomp_data[[orig_name]] <- NULL
+              }
+              formula_str <- gsub(
+                paste0("\\b", gsub("([.+*?^${}()|\\[\\]\\\\])", "\\\\\\1", orig_name), "\\b"),
+                new_name, formula_str
+              )
+            }
+            message("Renamed formula variables for display: ",
+              paste(paste(names(rename_map), "->", unlist(rename_map)), collapse = ", "))
+            message("Updated formula: ", formula_str)
           }
         }
 

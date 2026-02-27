@@ -12748,6 +12748,8 @@ server <- function(input, output, session) {
           }
         }, USE.NAMES = FALSE)
       }
+      # Apply any user-defined custom display renames on top
+      display_names <- apply_feature_display_names(display_names)
       
       # Create named vector for dropdown
       predictor_choices <- setNames(result$predictor_names, display_names)
@@ -13970,11 +13972,26 @@ server <- function(input, output, session) {
         if (nzchar(val)) rv$feature_renames[[nm]] <- val
       }
 
-      # Update features_dropdown last — triggers mini UI re-render using restored rv states above
+      # Update features_dropdown — include any renamed features so they appear in
+      # the mini UI table even if they weren't previously selected
       saved_feats <- unlist(feat$features_dropdown %||% list())
-      if (length(saved_feats) > 0) {
-        valid_feats <- intersect(saved_feats, rv$all_meta_cols)
-        if (length(valid_feats) > 0) updatePickerInput(session, "features_dropdown", selected = valid_feats)
+      renamed_feats <- names(Filter(nzchar, vapply(names(renames), function(nm) {
+        trimws(as.character(renames[[nm]] %||% ""))
+      }, character(1))))
+      feats_to_show <- unique(c(
+        intersect(saved_feats, rv$all_meta_cols),
+        intersect(renamed_feats, rv$all_meta_cols)
+      ))
+      if (length(feats_to_show) > 0) {
+        updatePickerInput(session, "features_dropdown", selected = feats_to_show)
+      }
+      # Also explicitly update rename textInputs (fires after UI re-renders)
+      for (nm in names(renames)) {
+        val <- trimws(as.character(renames[[nm]] %||% ""))
+        if (nzchar(val)) {
+          safe_id <- gsub("[^A-Za-z0-9]", "_", nm)
+          updateTextInput(session, paste0("rename_mini_", safe_id), value = val)
+        }
       }
 
       # === Pairing ===

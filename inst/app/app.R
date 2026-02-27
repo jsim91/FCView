@@ -2349,16 +2349,16 @@ server <- function(input, output, session) {
       # Exclude patient_ID, source, and run_date from predictor choices
       predictor_choices <- setdiff(predictor_choices, c("patient_ID", "source"))
 
-      updatePickerInput(session, "fs_outcome", choices = fs_outcome_choices, selected = NULL)
-      updatePickerInput(session, "fs_predictors", choices = c(predictor_choices, "cluster"), selected = NULL)
+      updatePickerInput(session, "fs_outcome", choices = make_labeled_choices(fs_outcome_choices), selected = NULL)
+      updatePickerInput(session, "fs_predictors", choices = make_labeled_choices(c(predictor_choices, "cluster")), selected = NULL)
       updatePickerInput(session, "fs_cluster_subset",
         choices = if (!is.null(rv$frequency_sample)) colnames(rv$frequency_sample) else character(0),
         selected = character(0)
       )
 
       # categorical_choices already excludes cluster and patient_ID
-      updatePickerInput(session, "lm_outcome", choices = categorical_choices, selected = NULL)
-      updatePickerInput(session, "lm_predictors", choices = c(predictor_choices, "cluster"), selected = NULL)
+      updatePickerInput(session, "lm_outcome", choices = make_labeled_choices(categorical_choices), selected = NULL)
+      updatePickerInput(session, "lm_predictors", choices = make_labeled_choices(c(predictor_choices, "cluster")), selected = NULL)
       updatePickerInput(session, "lm_cluster_subset",
         choices = if (!is.null(rv$frequency_sample)) colnames(rv$frequency_sample) else character(0),
         selected = character(0)
@@ -5222,7 +5222,7 @@ server <- function(input, output, session) {
       }
     }
     
-    updatePickerInput(session, "fs_predictors", choices = predictor_choices_with_entity, selected = current_selection)
+    updatePickerInput(session, "fs_predictors", choices = make_labeled_choices(predictor_choices_with_entity), selected = current_selection)
   }, ignoreNULL = FALSE, ignoreInit = TRUE)
   
   # Observer: Update Classification predictor choices based on entity
@@ -5244,7 +5244,7 @@ server <- function(input, output, session) {
       }
     }
     
-    updatePickerInput(session, "lm_predictors", choices = predictor_choices_with_entity, selected = current_selection)
+    updatePickerInput(session, "lm_predictors", choices = make_labeled_choices(predictor_choices_with_entity), selected = current_selection)
   }, ignoreNULL = FALSE, ignoreInit = TRUE)
   
   # Observer: Update Regression predictor choices based on entity
@@ -5266,7 +5266,7 @@ server <- function(input, output, session) {
       }
     }
     
-    updatePickerInput(session, "reg_predictors", choices = predictor_choices_with_entity, selected = current_selection)
+    updatePickerInput(session, "reg_predictors", choices = make_labeled_choices(predictor_choices_with_entity), selected = current_selection)
   }, ignoreNULL = FALSE, ignoreInit = TRUE)
   
   # Observer: Update Time to Event predictor choices based on entity
@@ -5552,10 +5552,10 @@ server <- function(input, output, session) {
       continuous_choices <- filter_by_global_settings(continuous_choices)
 
       updatePickerInput(session, "group_var",
-        choices = c("", categorical_choices), selected = ""
+        choices = make_labeled_choices(c("", categorical_choices)), selected = ""
       )
       updatePickerInput(session, "cont_var",
-        choices = c("", continuous_choices), selected = ""
+        choices = make_labeled_choices(c("", continuous_choices)), selected = ""
       )
     },
     ignoreInit = TRUE
@@ -5568,7 +5568,7 @@ server <- function(input, output, session) {
       # Apply global settings filter
       continuous_choices <- filter_by_global_settings(continuous_choices)
       updatePickerInput(session, "cont_group_var",
-        choices = c("", continuous_choices),
+        choices = make_labeled_choices(c("", continuous_choices)),
         selected = ""
       )
     },
@@ -6368,7 +6368,7 @@ server <- function(input, output, session) {
       # Apply global settings filter
       categorical_choices <- filter_by_global_settings(categorical_choices)
       updatePickerInput(session, "cat_group_var",
-        choices = c("", categorical_choices),
+        choices = make_labeled_choices(c("", categorical_choices)),
         selected = ""
       )
     },
@@ -6387,8 +6387,8 @@ server <- function(input, output, session) {
       continuous_choices <- sort(meta_cols[sapply(rv$meta_cell, function(x) is.numeric(x) || is.integer(x))])
       # Apply global settings filter
       continuous_choices <- filter_by_global_settings(continuous_choices)
-      updatePickerInput(session, "group_var", choices = c("", categorical_choices), selected = "")
-      updatePickerInput(session, "cont_var", choices = c("", continuous_choices), selected = "")
+      updatePickerInput(session, "group_var", choices = make_labeled_choices(c("", categorical_choices)), selected = "")
+      updatePickerInput(session, "cont_var", choices = make_labeled_choices(c("", continuous_choices)), selected = "")
     },
     ignoreInit = TRUE
   )
@@ -6401,7 +6401,7 @@ server <- function(input, output, session) {
       # Apply global settings filter
       continuous_choices <- filter_by_global_settings(continuous_choices)
       updatePickerInput(session, "cont_group_var",
-        choices = c("", continuous_choices),
+        choices = make_labeled_choices(c("", continuous_choices)),
         selected = ""
       )
     },
@@ -7600,8 +7600,8 @@ server <- function(input, output, session) {
       outcome_choices <- setdiff(meta_cols, c("cluster", "patient_ID", "source"))
       # Exclude patient_ID, source, and run_date from predictor choices
       predictor_choices <- setdiff(meta_cols, c("patient_ID", "source"))
-      updatePickerInput(session, "fs_outcome", choices = outcome_choices)
-      updatePickerInput(session, "fs_predictors", choices = predictor_choices)
+      updatePickerInput(session, "fs_outcome", choices = make_labeled_choices(outcome_choices))
+      updatePickerInput(session, "fs_predictors", choices = make_labeled_choices(predictor_choices))
     },
     ignoreInit = TRUE
   )
@@ -8379,8 +8379,8 @@ server <- function(input, output, session) {
         predictor_choices <- c(predictor_choices, "cluster")
       }
 
-      updatePickerInput(session, "lm_outcome", choices = categorical_choices, selected = NULL)
-      updatePickerInput(session, "lm_predictors", choices = predictor_choices, selected = NULL)
+      updatePickerInput(session, "lm_outcome", choices = make_labeled_choices(categorical_choices), selected = NULL)
+      updatePickerInput(session, "lm_predictors", choices = make_labeled_choices(predictor_choices), selected = NULL)
       updatePickerInput(session, "lm_cluster_subset",
         choices = colnames(rv$frequency_sample),
         selected = character(0)
@@ -8405,8 +8405,8 @@ server <- function(input, output, session) {
         predictor_choices <- c(predictor_choices, "cluster")
       }
 
-      updatePickerInput(session, "reg_outcome", choices = continuous_choices, selected = NULL)
-      updatePickerInput(session, "reg_predictors", choices = predictor_choices, selected = NULL)
+      updatePickerInput(session, "reg_outcome", choices = make_labeled_choices(continuous_choices), selected = NULL)
+      updatePickerInput(session, "reg_predictors", choices = make_labeled_choices(predictor_choices), selected = NULL)
       updatePickerInput(session, "reg_cluster_subset",
         choices = colnames(rv$frequency_sample),
         selected = character(0)
@@ -10720,8 +10720,8 @@ server <- function(input, output, session) {
     all_simple_choices <- sort(c(categorical_choices, continuous_choices))
 
     # For simple mode — include both categorical and continuous
-    updatePickerInput(session, "sccomp_group_var", choices = c("", all_simple_choices))
-    updatePickerInput(session, "sccomp_formula_vars", choices = c("", all_simple_choices))
+    updatePickerInput(session, "sccomp_group_var", choices = make_labeled_choices(c("", all_simple_choices)))
+    updatePickerInput(session, "sccomp_formula_vars", choices = make_labeled_choices(c("", all_simple_choices)))
 
     # For custom mode - show all variables including continuous
     all_vars <- sort(colnames(rv$meta_sample))
@@ -11835,8 +11835,8 @@ server <- function(input, output, session) {
         predictor_choices <- c(predictor_choices, "cluster")
       }
 
-      updatePickerInput(session, "surv_outcome", choices = continuous_choices, selected = NULL)
-      updatePickerInput(session, "surv_predictors", choices = predictor_choices, selected = NULL)
+      updatePickerInput(session, "surv_outcome", choices = make_labeled_choices(continuous_choices), selected = NULL)
+      updatePickerInput(session, "surv_predictors", choices = make_labeled_choices(predictor_choices), selected = NULL)
       if (!is.null(rv$frequency_sample)) {
         updatePickerInput(session, "surv_cluster_subset",
           choices = colnames(rv$frequency_sample),

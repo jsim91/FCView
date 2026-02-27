@@ -1118,7 +1118,7 @@ ui <- navbarPage(
   tabPanel(
     "Edit Features",
     h3("Feature Type Coercion & Visibility"),
-    helpText("Select metadata features to update. Categorical features can be converted to continuous where possible and vice versa for downstream testing. You may also choose to hide features from the app by selecting the 'Hide' checkbox. Deselecting a feature resets it to its original type. Changes take effect immediately."),
+    helpText("Select metadata features to update. Categorical features can be converted to continuous where possible and vice versa for downstream testing. You may also hide features from the app or give them a custom display name. Deselecting a feature resets its type coercion to original. Changes take effect immediately."),
     fluidRow(
       column(
         6,
@@ -1660,7 +1660,6 @@ ui <- navbarPage(
         3,
         conditionalPanel(
           condition = "output.hasRegResults",
-          h4("Model Features"),
           tableOutput("reg_features")
         )
       )
@@ -1995,7 +1994,8 @@ server <- function(input, output, session) {
     # Derived features (transforms and derivations created in Edit Features tab)
     feature_transforms      = list(),
     feature_derivations     = list(),
-    feature_categorizations = list()
+    feature_categorizations = list(),
+    feature_renames         = list()
   )
   cat_plot_cache <- reactiveVal(NULL)
   cont_plot_cache <- reactiveVal(NULL)
@@ -2491,16 +2491,33 @@ server <- function(input, output, session) {
       type_choices <- c("(no coercion)" = "", valid_types)
       current_type <- rv$type_coercions[[col]] %||% ""
       # persisted hide state
-      hide_state <- rv$mini_hide_states[[col]] %||% FALSE
+      hide_state  <- rv$mini_hide_states[[col]] %||% FALSE
+      rename_val  <- rv$feature_renames[[col]] %||% ""
 
       fluidRow(
-        column(4, tags$strong(col)),
+        column(3, tags$strong(col)),
         column(2, checkboxInput(paste0("hide_mini_", safe_id), "Hide", value = hide_state)),
-        column(6, selectInput(paste0("type_mini_", safe_id), NULL, choices = type_choices, selected = current_type, width = "100%"))
+        column(3, textInput(paste0("rename_mini_", safe_id), NULL, value = rename_val, placeholder = col, width = "100%")),
+        column(4, selectInput(paste0("type_mini_", safe_id), NULL, choices = type_choices, selected = current_type, width = "100%"))
       )
     })
 
-    tagList(tags$h5("Feature quick actions (hide / change data type)"), mini_uis)
+    tagList(
+      tags$h5("Feature quick actions (hide / rename / change data type)"),
+      fluidRow(
+        column(3, tags$small(tags$em("Feature"))),
+        column(2, tags$small(tags$em("Hide"))),
+        column(3, tags$small(tags$em("Custom name"))),
+        column(4, tags$small(tags$em("Data type")))
+      ),
+      mini_uis,
+      fluidRow(
+        column(12,
+          actionButton("apply_renames_btn", "Apply Names", icon = icon("check"),
+                       class = "btn-sm btn-primary", style = "margin-top:6px;")
+        )
+      )
+    )
   })
 
   # `features_checkboxes` removed — mini UI handles per-feature controls
@@ -2594,8 +2611,24 @@ server <- function(input, output, session) {
             )
           }
         }, ignoreInit = TRUE)
+
       })
     })
+  }, ignoreInit = TRUE)
+
+  # Apply all rename fields at once when button is clicked (avoids per-keystroke reactivity)
+  observeEvent(input$apply_renames_btn, {
+    req(rv$all_meta_cols)
+    for (col in rv$all_meta_cols) {
+      safe_id <- gsub("[^A-Za-z0-9]", "_", col)
+      val <- trimws(input[[paste0("rename_mini_", safe_id)]] %||% "")
+      if (nzchar(val)) {
+        rv$feature_renames[[col]] <- val
+      } else {
+        rv$feature_renames[[col]] <- NULL
+      }
+    }
+    showNotification("Feature names updated.", type = "message", duration = 3)
   }, ignoreInit = TRUE)
 
   # Track if any type coercion has changed (to trigger resets)
@@ -2680,10 +2713,16 @@ server <- function(input, output, session) {
 
     cat("Selected feature details:\n")
     for (col in sel) {
-      hide_state <- rv$mini_hide_states[[col]] %||% FALSE
-      coercion <- rv$type_coercions[[col]] %||% ""
+      hide_state    <- rv$mini_hide_states[[col]] %||% FALSE
+      coercion      <- rv$type_coercions[[col]] %||% ""
+      rename_val    <- rv$feature_renames[[col]] %||% ""
       coercion_text <- if (nzchar(coercion)) coercion else "(no coercion)"
-      cat(sprintf("- %s : Hide=%s ; Type=%s\n", col, ifelse(isTRUE(hide_state), "TRUE", "FALSE"), coercion_text))
+      rename_text   <- if (nzchar(rename_val)) paste0('"', rename_val, '"') else "(original)"
+      cat(sprintf("- %s : Hide=%s ; Name=%s ; Type=%s\n",
+                  col,
+                  ifelse(isTRUE(hide_state), "TRUE", "FALSE"),
+                  rename_text,
+                  coercion_text))
     }
   })
 
@@ -4031,8 +4070,8 @@ server <- function(input, output, session) {
     gg <- ggplot2::ggplot(df, ggplot2::aes(x = x)) +
       ggplot2::geom_histogram(bins = bins,
         fill = "grey70", colour = "black") +
-      ggplot2::labs(x = col, y = "Count",
-        title = paste0("Distribution of ", col),
+      ggplot2::labs(x = display_name(col), y = "Count",
+        title = paste0("Distribution of ", display_name(col)),
         subtitle = subtitle_txt) +
       ggplot2::theme_minimal(base_size = 13) +
       ggplot2::theme(plot.subtitle = ggplot2::element_text(size = 10, colour = "#555"))
@@ -5251,7 +5290,7 @@ server <- function(input, output, session) {
       }
     }
     
-    updatePickerInput(session, "surv_predictors", choices = predictor_choices, selected = current_selection)
+    updatePickerInput(session, "surv_predictors", choices = make_labeled_choices(predictor_choices), selected = current_selection)
   }, ignoreNULL = FALSE, ignoreInit = TRUE)
 
   # Render test type options for Categorical tab based on pairing feasibility
@@ -5349,7 +5388,7 @@ server <- function(input, output, session) {
   })
 
   # Update all dropdowns when global settings change
-  observeEvent(list(rv$available_features, rv$meta_sample),
+  observeEvent(list(rv$available_features, rv$meta_sample, rv$feature_renames),
     {
       req(rv$meta_sample, rv$data_ready)
 
@@ -5378,26 +5417,35 @@ server <- function(input, output, session) {
 
       # Update Feature Selection - allow both categorical and continuous outcomes
       fs_outcomes <- sort(c(categorical_outcomes, continuous_outcomes))
-      updatePickerInput(session, "fs_outcome", choices = fs_outcomes)
-      updatePickerInput(session, "fs_predictors", choices = predictors)
+      updatePickerInput(session, "fs_outcome", choices = make_labeled_choices(fs_outcomes))
+      updatePickerInput(session, "fs_predictors", choices = make_labeled_choices(predictors))
 
       # Update Classification
-      updatePickerInput(session, "lm_outcome", choices = categorical_outcomes)
-      updatePickerInput(session, "lm_predictors", choices = predictors)
+      updatePickerInput(session, "lm_outcome", choices = make_labeled_choices(categorical_outcomes))
+      updatePickerInput(session, "lm_predictors", choices = make_labeled_choices(predictors))
 
       # Update Regression
-      updatePickerInput(session, "reg_outcome", choices = continuous_outcomes)
-      updatePickerInput(session, "reg_predictors", choices = predictors)
+      updatePickerInput(session, "reg_outcome", choices = make_labeled_choices(continuous_outcomes))
+      updatePickerInput(session, "reg_predictors", choices = make_labeled_choices(predictors))
 
       # Update Testing tab
-      updatePickerInput(session, "group_var", choices = c("", filter_by_global_settings(categorical_choices)))
-      updatePickerInput(session, "cont_var", choices = c("", filter_by_global_settings(continuous_choices)))
+      updatePickerInput(session, "group_var", choices = make_labeled_choices(c("", filter_by_global_settings(categorical_choices))))
+      updatePickerInput(session, "cont_var", choices = make_labeled_choices(c("", filter_by_global_settings(continuous_choices))))
 
       # Update Categorical tab
-      updatePickerInput(session, "cat_group_var", choices = c("", filter_by_global_settings(categorical_choices)))
+      updatePickerInput(session, "cat_group_var", choices = make_labeled_choices(c("", filter_by_global_settings(categorical_choices))))
 
       # Update Continuous tab
-      updatePickerInput(session, "cont_group_var", choices = c("", filter_by_global_settings(continuous_choices)))
+      updatePickerInput(session, "cont_group_var", choices = make_labeled_choices(c("", filter_by_global_settings(continuous_choices))))
+
+      # Update sccomp tab
+      sccomp_all_choices <- sort(c(categorical_outcomes, continuous_outcomes))
+      updatePickerInput(session, "sccomp_group_var", choices = make_labeled_choices(c("", sccomp_all_choices)))
+      updatePickerInput(session, "sccomp_formula_vars", choices = make_labeled_choices(c("", sccomp_all_choices)))
+
+      # Update Time to Event tab
+      updatePickerInput(session, "surv_outcome", choices = make_labeled_choices(continuous_outcomes))
+      updatePickerInput(session, "surv_predictors", choices = make_labeled_choices(predictors))
     },
     ignoreInit = TRUE,
     ignoreNULL = FALSE
@@ -5417,6 +5465,32 @@ server <- function(input, output, session) {
       return(character(0))
     }
     intersect(choices, rv$available_features)
+  }
+
+  # Helper: apply custom display names to a choices vector.
+  # Returns a named character vector where names are display labels (custom rename
+  # if set, otherwise the original column name) and values are original column names.
+  # Empty-string sentinels ("no selection" entries) are passed through unchanged.
+  make_labeled_choices <- function(cols) {
+    nms <- vapply(cols, function(col) {
+      if (!nzchar(col)) return(col)
+      ren <- rv$feature_renames[[col]] %||% ""
+      if (nzchar(ren)) ren else col
+    }, character(1))
+    setNames(cols, nms)
+  }
+
+  # Return the custom display name for a single column name, or the original if none is set.
+  display_name <- function(col) {
+    if (is.null(col) || !nzchar(col %||% "")) return(col)
+    rv$feature_renames[[col]] %||% col
+  }
+
+  # Apply display names to a vector of feature names.
+  # Exact-match only: level-expanded dummy names (e.g. group_Treated) pass through unchanged.
+  apply_feature_display_names <- function(vec) {
+    if (length(rv$feature_renames) == 0) return(vec)
+    vapply(vec, function(f) rv$feature_renames[[f]] %||% f, character(1), USE.NAMES = FALSE)
   }
 
   # keep choices in sync with data
@@ -6999,7 +7073,7 @@ server <- function(input, output, session) {
         ggplot2::facet_wrap(~entity, ncol = facet_cols, scales = "free_y") +
         ggplot2::scale_y_continuous(expand = expansion(mult = c(0.05, 0.2))) +
         ggplot2::theme_bw(base_size = 18) +
-        ggplot2::labs(x = group_var, y = "Frequency") +
+        ggplot2::labs(x = display_name(group_var), y = "Frequency") +
         ggplot2::theme(
           strip.text.x = ggplot2::element_text(margin = ggplot2::margin(t = 1.1, b = 1.1)),
           axis.text.x = if (isTRUE(cp$show_xaxis_labels)) {
@@ -7895,6 +7969,7 @@ server <- function(input, output, session) {
       df <- df[order(df$ImportanceMean, decreasing = TRUE), ]
       # Remove backticks from feature names for cleaner plot labels
       df$Feature <- gsub("`", "", df$Feature, fixed = TRUE)
+      df$Feature <- apply_feature_display_names(df$Feature)
       # Plot all features that pass tolerance, not just top 30
       ggplot2::ggplot(
         df,
@@ -7926,6 +8001,7 @@ server <- function(input, output, session) {
       }
       # Remove backticks from feature names for cleaner plot labels
       df$Feature <- gsub("`", "", df$Feature, fixed = TRUE)
+      df$Feature <- apply_feature_display_names(df$Feature)
       if ("Class" %in% names(df)) {
         # Plot all features that pass tolerance per class, not just top 20
         top_n <- df %>%
@@ -8007,6 +8083,7 @@ server <- function(input, output, session) {
       if ("Feature" %in% names(df)) {
         df$Feature <- gsub("`", "", df$Feature, fixed = TRUE)
         df$Feature <- gsub("\\\\", "", df$Feature)
+        df$Feature <- apply_feature_display_names(df$Feature)
       }
 
       df
@@ -9219,6 +9296,7 @@ server <- function(input, output, session) {
       } else {
         df <- df[, c("Feature", "StandardizedCoef", "OriginalCoef", "OddsRatio")]
       }
+      df$Feature <- apply_feature_display_names(df$Feature)
       df <- order_features(df, "StandardizedCoef")
       rownames(df) <- NULL
       df
@@ -9256,6 +9334,7 @@ server <- function(input, output, session) {
       }
       # Remove backticks from feature names
       df$Feature <- gsub("`", "", df$Feature, fixed = TRUE)
+      df$Feature <- apply_feature_display_names(df$Feature)
       df <- order_features(df, "StandardizedCoef")
       rownames(df) <- NULL
       df
@@ -9289,6 +9368,7 @@ server <- function(input, output, session) {
 
       df <- dplyr::left_join(imp_scaled, imp_raw_df, by = "Feature")
       df <- df[, c("Feature", "RawImportance", "ScaledImportance")]
+      df$Feature <- apply_feature_display_names(df$Feature)
       df <- order_features(df, "RawImportance")
       rownames(df) <- NULL
       df
@@ -9949,7 +10029,7 @@ server <- function(input, output, session) {
       ggplot2::stat_qq_line(color = "red", linetype = "dashed") +
       ggplot2::labs(
         title = "Normal Q-Q Plot of Residuals",
-        subtitle = "Points on the dashed line = normally distributed; systematic deviation = non-normality",
+        # subtitle = "Points on the dashed line = normally distributed; systematic deviation = non-normality",
         x = "Theoretical Quantiles", y = "Sample Quantiles"
       ) +
       ggplot2::theme_minimal(base_size = 14)
@@ -10239,6 +10319,7 @@ server <- function(input, output, session) {
       # Filter out features with 0 coefficients (these were selected out by regularization)
       df <- df[abs(df$StandardizedCoef) > 1e-6, ]
       
+      df$Feature <- apply_feature_display_names(df$Feature)
       df <- df[, c("Feature", "StandardizedCoef", "OriginalCoef")]
       df <- order_features(df, "StandardizedCoef")
       rownames(df) <- NULL
@@ -10286,6 +10367,7 @@ server <- function(input, output, session) {
       }
 
       df <- df[, c("Feature", "StandardizedCoef", "OriginalCoef")]
+      df$Feature <- apply_feature_display_names(df$Feature)
       df <- order_features(df, "StandardizedCoef")
       rownames(df) <- NULL
       df
@@ -10319,6 +10401,7 @@ server <- function(input, output, session) {
 
       df <- dplyr::left_join(imp_scaled, imp_raw_df, by = "Feature")
       df <- df[, c("Feature", "RawImportance", "ScaledImportance")]
+      df$Feature <- apply_feature_display_names(df$Feature)
       df <- order_features(df, "RawImportance")
       rownames(df) <- NULL
       df
@@ -10667,7 +10750,7 @@ server <- function(input, output, session) {
     current_sel <- setdiff(input$sccomp_formula_vars %||% character(0), group_var)
 
     updatePickerInput(session, "sccomp_formula_vars",
-      choices  = c("", available),
+      choices  = make_labeled_choices(c("", available)),
       selected = current_sel
     )
   }, ignoreNULL = FALSE)
@@ -13135,7 +13218,8 @@ server <- function(input, output, session) {
         if (!is.null(s$name_mapping) && pred_name %in% names(s$name_mapping)) {
           display_name <- s$name_mapping[[pred_name]]
         }
-        
+        display_name <- apply_feature_display_names(display_name)
+
         # Calculate log-rank p-value for this predictor
         logrank_p <- tryCatch({
           if (length(unique(pred_result$data$risk_group)) >= 2) {
@@ -13214,7 +13298,8 @@ server <- function(input, output, session) {
         }
       }, USE.NAMES = FALSE)
     }
-    
+    feature_names <- apply_feature_display_names(feature_names)
+
     hr_raw <- coef_matrix[, "exp(coef)"]
 
     # Flag extreme Cox coefficients (|coef| > 15 → HR effectively 0 or Inf).
@@ -13559,7 +13644,8 @@ server <- function(input, output, session) {
         features = list(
           features_dropdown = isolate(input$features_dropdown) %||% character(0),
           mini_hide_states = isolate(rv$mini_hide_states),
-          type_coercions = isolate(rv$type_coercions)
+          type_coercions = isolate(rv$type_coercions),
+          feature_renames = isolate(rv$feature_renames)
         ),
         pairing = list(
           pairing_var = isolate(input$pairing_var) %||% ""
@@ -13828,6 +13914,12 @@ server <- function(input, output, session) {
       coercs <- feat$type_coercions %||% list()
       for (nm in names(coercs)) {
         rv$type_coercions[[nm]] <- as.character(coercs[[nm]] %||% "")
+      }
+
+      renames <- feat$feature_renames %||% list()
+      for (nm in names(renames)) {
+        val <- trimws(as.character(renames[[nm]] %||% ""))
+        if (nzchar(val)) rv$feature_renames[[nm]] <- val
       }
 
       # Update features_dropdown last — triggers mini UI re-render using restored rv states above
